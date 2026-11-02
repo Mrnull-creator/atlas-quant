@@ -1,0 +1,39 @@
+﻿# Python environments
+.venv/
+venv/
+env/
+
+# Python caches
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# IDE and operating system
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Logs and temporary files
+logs/
+*.log
+*.tmp
+
+# Secrets and local environment
+.env
+.env.*
+!.env.example
+
+# Market data: preserve locally, do not commit bulk datasets
+data/raw/
+data/processed/
+data/external/
+data/verification/
+
+# Research outputs and generated artifacts
+research/experiments/
+research/reports/
