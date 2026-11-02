@@ -37,3 +37,6 @@ data/verification/
 # Research outputs and generated artifacts
 research/experiments/
 research/reports/
+
+# Python package build metadata
+*.egg-info/
