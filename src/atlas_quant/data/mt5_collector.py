@@ -4,7 +4,7 @@ from pathlib import Path
 import MetaTrader5 as mt5
 import pandas as pd
 
-from src.atlas_quant.data.validation import validate_ohlc
+from atlas_quant.data.validation import validate_ohlc
 
 
 SYMBOL = "EURUSD"

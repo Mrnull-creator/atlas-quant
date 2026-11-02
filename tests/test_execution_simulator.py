@@ -2,7 +2,7 @@
 import pandas as pd
 import pytest
 
-from src.atlas_quant.backtesting.execution_simulator import (
+from atlas_quant.backtesting.execution_simulator import (
     simulate_execution,
 )
 

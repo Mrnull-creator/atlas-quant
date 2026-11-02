@@ -1,7 +1,7 @@
 import pandas as pd
 import pytest
 
-from src.atlas_quant.backtesting.engine import (
+from atlas_quant.backtesting.engine import (
     run_backtest,
     summarize_backtest,
 )

@@ -2,7 +2,7 @@
 import pandas as pd
 import pytest
 
-from src.atlas_quant.data.validation import validate_ohlc
+from atlas_quant.data.validation import validate_ohlc
 
 
 def sample_data():

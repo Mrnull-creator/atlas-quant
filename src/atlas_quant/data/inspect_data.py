@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from src.atlas_quant.data.validation import validate_ohlc
+from atlas_quant.data.validation import validate_ohlc
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]

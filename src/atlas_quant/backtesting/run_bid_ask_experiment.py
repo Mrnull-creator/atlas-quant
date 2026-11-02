@@ -3,10 +3,10 @@ from pathlib import Path
 
 import pandas as pd
 
-from src.atlas_quant.backtesting.bid_ask import (
+from atlas_quant.backtesting.bid_ask import (
     run_bid_ask_backtest,
 )
-from src.atlas_quant.strategies.momentum import (
+from atlas_quant.strategies.momentum import (
     StrategyConfig,
     generate_signals,
 )

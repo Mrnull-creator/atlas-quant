@@ -1,0 +1,38 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "atlas-quant"
+version = "0.1.0"
+description = "A modular multi-asset quantitative research and algorithmic trading platform"
+requires-python = ">=3.14,<3.15"
+dependencies = [
+    "numpy>=2.0,<3",
+    "pandas>=3.0,<4",
+]
+
+[project.optional-dependencies]
+data = [
+    "pyarrow>=20,<30",
+    "dukascopy-downloader>=1.1,<2",
+]
+broker = [
+    "MetaTrader5>=5.0.6231,<6; platform_system == 'Windows'",
+]
+dev = [
+    "pytest>=9,<10",
+]
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["atlas_quant*"]
+namespaces = false
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+addopts = "-ra"

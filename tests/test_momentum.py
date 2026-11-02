@@ -3,7 +3,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from src.atlas_quant.strategies.momentum import (
+from atlas_quant.strategies.momentum import (
     StrategyConfig,
     generate_signals,
 )

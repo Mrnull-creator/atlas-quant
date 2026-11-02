@@ -3,12 +3,12 @@ from pathlib import Path
 
 import pandas as pd
 
-from src.atlas_quant.data.validation import validate_ohlc
-from src.atlas_quant.strategies.momentum import (
+from atlas_quant.data.validation import validate_ohlc
+from atlas_quant.strategies.momentum import (
     StrategyConfig,
     generate_signals,
 )
-from src.atlas_quant.backtesting.engine import run_backtest
+from atlas_quant.backtesting.engine import run_backtest
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]

@@ -2,7 +2,7 @@
 import pandas as pd
 import pytest
 
-from src.atlas_quant.backtesting.bid_ask import (
+from atlas_quant.backtesting.bid_ask import (
     run_bid_ask_backtest,
 )
 
