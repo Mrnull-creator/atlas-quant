@@ -1,4 +1,3 @@
-
 from typing import Any
 
 
@@ -6,20 +5,26 @@ class AtlasQuantError(Exception):
     """Base exception for Atlas Quant application errors."""
 
     error_code = "ATLAS_ERROR"
+    http_status_code = 500
 
     def __init__(
         self,
         message: str,
         *,
         details: dict[str, Any] | None = None,
+        http_status_code: int | None = None,
     ) -> None:
         self.message = message
         self.details = details or {}
+
+        if http_status_code is not None:
+            self.http_status_code = http_status_code
 
         super().__init__(message)
 
     def to_dict(self) -> dict[str, Any]:
         """Return a standardized, serializable error representation."""
+
         return {
             "error_code": self.error_code,
             "message": self.message,

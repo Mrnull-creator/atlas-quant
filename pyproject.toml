@@ -10,10 +10,11 @@ requires-python = ">=3.14,<3.15"
 dependencies = [
     "numpy>=2.0,<3",
     "pandas>=3.0,<4",
+    "fastapi==0.152.0",
+    "uvicorn==0.54.0",
     "pydantic==2.14.2",
     "pydantic-settings==2.16.2",
 ]
-
 [project.optional-dependencies]
 data = [
     "pyarrow>=20,<30",
@@ -24,6 +25,7 @@ broker = [
 ]
 dev = [
     "pytest>=9,<10",
+    "httpx2==2.16.0",
 ]
 
 [tool.setuptools]
