@@ -15,6 +15,7 @@ from atlas_quant.services.market_data.domain.datasets import (
     Dataset,
     DatasetVersion,
 )
+from atlas_quant.services.market_data.domain.enums import AssetClass
 from atlas_quant.services.market_data.domain.ingestion import IngestionJob
 from atlas_quant.services.market_data.domain.instruments import Instrument
 from atlas_quant.services.market_data.domain.providers import (
@@ -26,11 +27,20 @@ from atlas_quant.services.market_data.domain.validation import ValidationReport
 class InstrumentRepository(Protocol):
     """Persistence interface for financial instruments."""
 
-    async def get_by_symbol(
+    async def get_by_id(
+        self,
+        instrument_id: UUID,
+    ) -> Instrument | None:
+        """Retrieve an instrument by its permanent UUID."""
+        ...
+
+    async def get_by_business_key(
         self,
         symbol: str,
+        asset_class: AssetClass,
+        exchange: str | None,
     ) -> Instrument | None:
-        """Retrieve an instrument by its normalized symbol."""
+        """Retrieve an instrument by its business uniqueness key."""
         ...
 
     async def list_all(self) -> tuple[Instrument, ...]:

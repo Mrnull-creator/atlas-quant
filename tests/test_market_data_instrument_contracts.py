@@ -1,5 +1,5 @@
-
 from decimal import Decimal
+from uuid import UUID
 
 import pytest
 from pydantic import ValidationError
@@ -10,8 +10,12 @@ from atlas_quant.services.market_data.contracts.instruments import (
 from atlas_quant.services.market_data.domain.enums import AssetClass
 
 
+INSTRUMENT_ID = UUID("12345678-1234-5678-1234-567812345678")
+
+
 def create_contract(**overrides):
     values = {
+        "instrument_id": INSTRUMENT_ID,
         "symbol": "EURUSD",
         "asset_class": AssetClass.FOREX,
         "base_currency": "EUR",
@@ -26,10 +30,32 @@ def create_contract(**overrides):
 def test_create_instrument_contract():
     contract = create_contract()
 
+    assert contract.instrument_id == INSTRUMENT_ID
     assert contract.symbol == "EURUSD"
     assert contract.asset_class == AssetClass.FOREX
     assert contract.base_currency == "EUR"
     assert contract.quote_currency == "USD"
+
+
+def test_requires_instrument_id():
+    with pytest.raises(ValidationError):
+        InstrumentContract(
+            symbol="EURUSD",
+            asset_class=AssetClass.FOREX,
+        )
+
+
+def test_rejects_invalid_instrument_id():
+    with pytest.raises(ValidationError):
+        create_contract(instrument_id="not-a-uuid")
+
+
+def test_accepts_uuid_string():
+    contract = create_contract(
+        instrument_id=str(INSTRUMENT_ID),
+    )
+
+    assert contract.instrument_id == INSTRUMENT_ID
 
 
 def test_normalizes_identifiers():
@@ -95,6 +121,7 @@ def test_contract_json_serialization():
 
     payload = contract.model_dump_json()
 
+    assert f'"instrument_id":"{INSTRUMENT_ID}"' in payload
     assert '"symbol":"EURUSD"' in payload
     assert '"asset_class":"forex"' in payload
     assert '"tick_size":"0.00001"' in payload
@@ -105,5 +132,6 @@ def test_contract_dictionary_serialization():
 
     payload = contract.model_dump()
 
+    assert payload["instrument_id"] == INSTRUMENT_ID
     assert payload["symbol"] == "EURUSD"
     assert payload["tick_size"] == Decimal("0.00001")

@@ -1,17 +1,18 @@
-
 """Application service for managing financial instruments."""
 
 from dataclasses import replace
+from uuid import UUID
 
 from atlas_quant.platform.errors import AtlasQuantError
 from atlas_quant.services.market_data.application.repositories import (
     InstrumentRepository,
 )
+from atlas_quant.services.market_data.domain.enums import AssetClass
 from atlas_quant.services.market_data.domain.instruments import Instrument
 
 
 class InstrumentAlreadyExistsError(AtlasQuantError):
-    """Raised when an instrument is already registered."""
+    """Raised when an instrument business key is already registered."""
 
     error_code = "INSTRUMENT_ALREADY_EXISTS"
     http_status_code = 409
@@ -39,14 +40,18 @@ class InstrumentRegistry:
     ) -> Instrument:
         """Register a new instrument."""
 
-        existing = await self._repository.get_by_symbol(
-            instrument.symbol
+        existing = await self._repository.get_by_business_key(
+            *instrument.business_key
         )
 
         if existing is not None:
             raise InstrumentAlreadyExistsError(
-                f"Instrument {instrument.symbol} is already registered.",
-                details={"symbol": instrument.symbol},
+                "An instrument with this business key is already registered.",
+                details={
+                    "symbol": instrument.symbol,
+                    "asset_class": instrument.asset_class.value,
+                    "exchange": instrument.exchange,
+                },
             )
 
         await self._repository.add(instrument)
@@ -55,20 +60,52 @@ class InstrumentRegistry:
 
     async def get_instrument(
         self,
-        symbol: str,
+        instrument_id: UUID,
     ) -> Instrument:
-        """Retrieve an instrument by symbol."""
+        """Retrieve an instrument by its permanent UUID."""
+
+        if not isinstance(instrument_id, UUID):
+            raise TypeError("instrument_id must be a UUID.")
+
+        instrument = await self._repository.get_by_id(instrument_id)
+
+        if instrument is None:
+            raise InstrumentNotFoundError(
+                f"Instrument {instrument_id} was not found.",
+                details={"instrument_id": str(instrument_id)},
+            )
+
+        return instrument
+
+    async def get_instrument_by_business_key(
+        self,
+        symbol: str,
+        asset_class: AssetClass,
+        exchange: str | None = None,
+    ) -> Instrument:
+        """Retrieve an instrument using its complete business key."""
 
         normalized_symbol = self._normalize_symbol(symbol)
 
-        instrument = await self._repository.get_by_symbol(
-            normalized_symbol
+        if not isinstance(asset_class, AssetClass):
+            raise TypeError("asset_class must be an AssetClass value.")
+
+        normalized_exchange = self._normalize_exchange(exchange)
+
+        instrument = await self._repository.get_by_business_key(
+            normalized_symbol,
+            asset_class,
+            normalized_exchange,
         )
 
         if instrument is None:
             raise InstrumentNotFoundError(
-                f"Instrument {normalized_symbol} was not found.",
-                details={"symbol": normalized_symbol},
+                "No instrument matches the supplied business key.",
+                details={
+                    "symbol": normalized_symbol,
+                    "asset_class": asset_class.value,
+                    "exchange": normalized_exchange,
+                },
             )
 
         return instrument
@@ -82,16 +119,35 @@ class InstrumentRegistry:
         self,
         instrument: Instrument,
     ) -> Instrument:
-        """Update an existing instrument."""
+        """Update an existing instrument without changing its identity."""
 
-        existing = await self._repository.get_by_symbol(
-            instrument.symbol
+        existing = await self._repository.get_by_id(
+            instrument.instrument_id
         )
 
         if existing is None:
             raise InstrumentNotFoundError(
-                f"Instrument {instrument.symbol} was not found.",
-                details={"symbol": instrument.symbol},
+                f"Instrument {instrument.instrument_id} was not found.",
+                details={
+                    "instrument_id": str(instrument.instrument_id),
+                },
+            )
+
+        conflicting = await self._repository.get_by_business_key(
+            *instrument.business_key
+        )
+
+        if (
+            conflicting is not None
+            and conflicting.instrument_id != instrument.instrument_id
+        ):
+            raise InstrumentAlreadyExistsError(
+                "Another instrument already uses this business key.",
+                details={
+                    "symbol": instrument.symbol,
+                    "asset_class": instrument.asset_class.value,
+                    "exchange": instrument.exchange,
+                },
             )
 
         await self._repository.update(instrument)
@@ -100,21 +156,11 @@ class InstrumentRegistry:
 
     async def deactivate_instrument(
         self,
-        symbol: str,
+        instrument_id: UUID,
     ) -> Instrument:
         """Deactivate an instrument without deleting its history."""
 
-        normalized_symbol = self._normalize_symbol(symbol)
-
-        instrument = await self._repository.get_by_symbol(
-            normalized_symbol
-        )
-
-        if instrument is None:
-            raise InstrumentNotFoundError(
-                f"Instrument {normalized_symbol} was not found.",
-                details={"symbol": normalized_symbol},
-            )
+        instrument = await self.get_instrument(instrument_id)
 
         if not instrument.is_active:
             return instrument
@@ -138,3 +184,20 @@ class InstrumentRegistry:
             raise ValueError("Instrument symbol cannot be empty.")
 
         return normalized_symbol
+
+    @staticmethod
+    def _normalize_exchange(exchange: str | None) -> str | None:
+        """Normalize and validate an optional exchange."""
+
+        if exchange is None:
+            return None
+
+        if not isinstance(exchange, str):
+            raise TypeError("Exchange must be a string.")
+
+        normalized_exchange = exchange.strip().upper()
+
+        if not normalized_exchange:
+            raise ValueError("Exchange cannot be empty.")
+
+        return normalized_exchange

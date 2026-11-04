@@ -1,7 +1,7 @@
-
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from decimal import Decimal
 from typing import Any
+from uuid import UUID, uuid4
 
 from atlas_quant.services.market_data.domain.enums import AssetClass
 
@@ -12,6 +12,8 @@ class Instrument:
 
     symbol: str
     asset_class: AssetClass
+
+    instrument_id: UUID = field(default_factory=uuid4)
 
     exchange: str | None = None
 
@@ -28,6 +30,9 @@ class Instrument:
 
     def __post_init__(self) -> None:
         """Validate and normalize instrument metadata."""
+
+        if not isinstance(self.instrument_id, UUID):
+            raise TypeError("instrument_id must be a UUID.")
 
         if not isinstance(self.symbol, str):
             raise TypeError("Instrument symbol must be a string.")
@@ -72,6 +77,19 @@ class Instrument:
 
         self._validate_decimal("tick_size", self.tick_size)
         self._validate_decimal("contract_size", self.contract_size)
+
+        if not isinstance(self.is_active, bool):
+            raise TypeError("is_active must be a boolean.")
+
+    @property
+    def business_key(self) -> tuple[str, AssetClass, str | None]:
+        """Return the normalized business uniqueness key."""
+
+        return (
+            self.symbol,
+            self.asset_class,
+            self.exchange,
+        )
 
     def _validate_currency(self, field_name: str) -> None:
         """Validate optional currency identifiers."""

@@ -1,5 +1,5 @@
-
 from decimal import Decimal
+from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -13,6 +13,8 @@ class InstrumentContract(BaseModel):
         frozen=True,
         extra="forbid",
     )
+
+    instrument_id: UUID
 
     symbol: str
     asset_class: AssetClass
