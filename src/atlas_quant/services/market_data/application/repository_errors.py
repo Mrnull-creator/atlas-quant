@@ -11,3 +11,15 @@ class InstrumentBusinessKeyConflictError(InstrumentRepositoryError):
 
 class InstrumentRepositoryRecordNotFoundError(InstrumentRepositoryError):
     """Raised when an instrument expected by a repository operation is absent."""
+
+
+class ProviderRepositoryError(Exception):
+    """Base exception for provider repository operations."""
+
+
+class ProviderRepositoryDuplicateError(ProviderRepositoryError):
+    """Raised when a provider identifier violates uniqueness."""
+
+
+class ProviderRepositoryRecordNotFoundError(ProviderRepositoryError):
+    """Raised when a provider expected by a repository operation is absent."""

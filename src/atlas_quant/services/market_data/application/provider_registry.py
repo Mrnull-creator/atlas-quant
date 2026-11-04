@@ -1,4 +1,3 @@
-
 """Application service for managing market data providers."""
 
 import re
@@ -7,6 +6,10 @@ from dataclasses import replace
 from atlas_quant.platform.errors import AtlasQuantError
 from atlas_quant.services.market_data.application.repositories import (
     ProviderRepository,
+)
+from atlas_quant.services.market_data.application.repository_errors import (
+    ProviderRepositoryDuplicateError,
+    ProviderRepositoryRecordNotFoundError,
 )
 from atlas_quant.services.market_data.domain.providers import (
     MarketDataProvider,
@@ -47,12 +50,14 @@ class ProviderRegistry:
         )
 
         if existing is not None:
-            raise ProviderAlreadyExistsError(
-                f"Provider {provider.provider_id} is already registered.",
-                details={"provider_id": provider.provider_id},
-            )
+            raise self._already_exists(provider.provider_id)
 
-        await self._repository.add(provider)
+        try:
+            await self._repository.add(provider)
+        except ProviderRepositoryDuplicateError as error:
+            raise self._already_exists(
+                provider.provider_id
+            ) from error
 
         return provider
 
@@ -67,10 +72,7 @@ class ProviderRegistry:
         provider = await self._repository.get_by_id(normalized_id)
 
         if provider is None:
-            raise ProviderNotFoundError(
-                f"Provider {normalized_id} was not found.",
-                details={"provider_id": normalized_id},
-            )
+            raise self._not_found(normalized_id)
 
         return provider
 
@@ -94,7 +96,12 @@ class ProviderRegistry:
 
         enabled_provider = replace(provider, is_enabled=True)
 
-        await self._repository.update(enabled_provider)
+        try:
+            await self._repository.update(enabled_provider)
+        except ProviderRepositoryRecordNotFoundError as error:
+            raise self._not_found(
+                enabled_provider.provider_id
+            ) from error
 
         return enabled_provider
 
@@ -111,9 +118,36 @@ class ProviderRegistry:
 
         disabled_provider = replace(provider, is_enabled=False)
 
-        await self._repository.update(disabled_provider)
+        try:
+            await self._repository.update(disabled_provider)
+        except ProviderRepositoryRecordNotFoundError as error:
+            raise self._not_found(
+                disabled_provider.provider_id
+            ) from error
 
         return disabled_provider
+
+    @staticmethod
+    def _already_exists(
+        provider_id: str,
+    ) -> ProviderAlreadyExistsError:
+        """Create the public duplicate-provider application error."""
+
+        return ProviderAlreadyExistsError(
+            f"Provider {provider_id} is already registered.",
+            details={"provider_id": provider_id},
+        )
+
+    @staticmethod
+    def _not_found(
+        provider_id: str,
+    ) -> ProviderNotFoundError:
+        """Create the public provider-not-found application error."""
+
+        return ProviderNotFoundError(
+            f"Provider {provider_id} was not found.",
+            details={"provider_id": provider_id},
+        )
 
     @staticmethod
     def _normalize_provider_id(provider_id: str) -> str:

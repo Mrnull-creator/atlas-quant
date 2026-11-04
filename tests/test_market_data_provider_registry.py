@@ -1,3 +1,4 @@
+"""Tests for the market data provider registry."""
 
 import asyncio
 
@@ -7,6 +8,10 @@ from atlas_quant.services.market_data.application.provider_registry import (
     ProviderAlreadyExistsError,
     ProviderNotFoundError,
     ProviderRegistry,
+)
+from atlas_quant.services.market_data.application.repository_errors import (
+    ProviderRepositoryDuplicateError,
+    ProviderRepositoryRecordNotFoundError,
 )
 from atlas_quant.services.market_data.domain.enums import (
     AssetClass,
@@ -51,6 +56,30 @@ class InMemoryProviderRepository:
             raise ValueError("Provider does not exist.")
 
         self.providers[provider.provider_id] = provider
+
+
+class DuplicateOnAddRepository(InMemoryProviderRepository):
+    """Simulate a duplicate detected by the database during insertion."""
+
+    async def add(
+        self,
+        provider: MarketDataProvider,
+    ) -> None:
+        raise ProviderRepositoryDuplicateError(
+            "Provider already exists."
+        )
+
+
+class MissingOnUpdateRepository(InMemoryProviderRepository):
+    """Simulate a provider disappearing before an update."""
+
+    async def update(
+        self,
+        provider: MarketDataProvider,
+    ) -> None:
+        raise ProviderRepositoryRecordNotFoundError(
+            "Provider no longer exists."
+        )
 
 
 def create_provider(
@@ -99,6 +128,18 @@ def test_reject_duplicate_provider():
         provider = create_provider()
 
         await registry.register_provider(provider)
+
+        with pytest.raises(ProviderAlreadyExistsError):
+            await registry.register_provider(provider)
+
+    asyncio.run(scenario())
+
+
+def test_register_translates_repository_duplicate_error():
+    async def scenario():
+        repository = DuplicateOnAddRepository()
+        registry = ProviderRegistry(repository)
+        provider = create_provider()
 
         with pytest.raises(ProviderAlreadyExistsError):
             await registry.register_provider(provider)
@@ -199,6 +240,19 @@ def test_enable_provider_is_idempotent():
     asyncio.run(scenario())
 
 
+def test_enable_translates_missing_repository_record():
+    async def scenario():
+        repository = MissingOnUpdateRepository()
+        provider = create_provider(is_enabled=False)
+        repository.providers[provider.provider_id] = provider
+        registry = ProviderRegistry(repository)
+
+        with pytest.raises(ProviderNotFoundError):
+            await registry.enable_provider("dukascopy")
+
+    asyncio.run(scenario())
+
+
 def test_disable_enabled_provider():
     async def scenario():
         registry, repository = create_registry()
@@ -225,6 +279,19 @@ def test_disable_provider_is_idempotent():
 
         assert result == provider
         assert repository.providers["dukascopy"] == provider
+
+    asyncio.run(scenario())
+
+
+def test_disable_translates_missing_repository_record():
+    async def scenario():
+        repository = MissingOnUpdateRepository()
+        provider = create_provider()
+        repository.providers[provider.provider_id] = provider
+        registry = ProviderRegistry(repository)
+
+        with pytest.raises(ProviderNotFoundError):
+            await registry.disable_provider("dukascopy")
 
     asyncio.run(scenario())
 
