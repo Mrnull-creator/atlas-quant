@@ -7,6 +7,10 @@ from atlas_quant.platform.errors import AtlasQuantError
 from atlas_quant.services.market_data.application.repositories import (
     InstrumentRepository,
 )
+from atlas_quant.services.market_data.application.repository_errors import (
+    InstrumentBusinessKeyConflictError,
+    InstrumentRepositoryRecordNotFoundError,
+)
 from atlas_quant.services.market_data.domain.enums import AssetClass
 from atlas_quant.services.market_data.domain.instruments import Instrument
 
@@ -45,16 +49,12 @@ class InstrumentRegistry:
         )
 
         if existing is not None:
-            raise InstrumentAlreadyExistsError(
-                "An instrument with this business key is already registered.",
-                details={
-                    "symbol": instrument.symbol,
-                    "asset_class": instrument.asset_class.value,
-                    "exchange": instrument.exchange,
-                },
-            )
+            raise self._already_exists(instrument)
 
-        await self._repository.add(instrument)
+        try:
+            await self._repository.add(instrument)
+        except InstrumentBusinessKeyConflictError as exc:
+            raise self._already_exists(instrument) from exc
 
         return instrument
 
@@ -70,10 +70,7 @@ class InstrumentRegistry:
         instrument = await self._repository.get_by_id(instrument_id)
 
         if instrument is None:
-            raise InstrumentNotFoundError(
-                f"Instrument {instrument_id} was not found.",
-                details={"instrument_id": str(instrument_id)},
-            )
+            raise self._not_found(instrument_id)
 
         return instrument
 
@@ -126,12 +123,7 @@ class InstrumentRegistry:
         )
 
         if existing is None:
-            raise InstrumentNotFoundError(
-                f"Instrument {instrument.instrument_id} was not found.",
-                details={
-                    "instrument_id": str(instrument.instrument_id),
-                },
-            )
+            raise self._not_found(instrument.instrument_id)
 
         conflicting = await self._repository.get_by_business_key(
             *instrument.business_key
@@ -141,16 +133,14 @@ class InstrumentRegistry:
             conflicting is not None
             and conflicting.instrument_id != instrument.instrument_id
         ):
-            raise InstrumentAlreadyExistsError(
-                "Another instrument already uses this business key.",
-                details={
-                    "symbol": instrument.symbol,
-                    "asset_class": instrument.asset_class.value,
-                    "exchange": instrument.exchange,
-                },
-            )
+            raise self._already_exists(instrument)
 
-        await self._repository.update(instrument)
+        try:
+            await self._repository.update(instrument)
+        except InstrumentBusinessKeyConflictError as exc:
+            raise self._already_exists(instrument) from exc
+        except InstrumentRepositoryRecordNotFoundError as exc:
+            raise self._not_found(instrument.instrument_id) from exc
 
         return instrument
 
@@ -167,9 +157,27 @@ class InstrumentRegistry:
 
         deactivated = replace(instrument, is_active=False)
 
-        await self._repository.update(deactivated)
+        await self.update_instrument(deactivated)
 
         return deactivated
+
+    @staticmethod
+    def _already_exists(instrument: Instrument) -> InstrumentAlreadyExistsError:
+        return InstrumentAlreadyExistsError(
+            "An instrument with this business key is already registered.",
+            details={
+                "symbol": instrument.symbol,
+                "asset_class": instrument.asset_class.value,
+                "exchange": instrument.exchange,
+            },
+        )
+
+    @staticmethod
+    def _not_found(instrument_id: UUID) -> InstrumentNotFoundError:
+        return InstrumentNotFoundError(
+            f"Instrument {instrument_id} was not found.",
+            details={"instrument_id": str(instrument_id)},
+        )
 
     @staticmethod
     def _normalize_symbol(symbol: str) -> str:
