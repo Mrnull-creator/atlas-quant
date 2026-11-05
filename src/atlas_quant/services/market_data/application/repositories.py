@@ -21,6 +21,9 @@ from atlas_quant.services.market_data.domain.instruments import Instrument
 from atlas_quant.services.market_data.domain.providers import (
     MarketDataProvider,
 )
+from atlas_quant.services.market_data.domain.provider_instrument_mappings import (
+    ProviderInstrumentMapping,
+)
 from atlas_quant.services.market_data.domain.validation import ValidationReport
 
 
@@ -211,4 +214,52 @@ class DatasetVersionLineageRepository(Protocol):
 
     async def add(self, lineage: DatasetVersionLineage) -> None:
         """Persist a new lineage relationship."""
+        ...
+
+
+class ProviderInstrumentMappingRepository(Protocol):
+    """Persistence interface for provider-specific instrument identifiers."""
+
+    async def get_by_id(
+        self,
+        mapping_id: UUID,
+    ) -> ProviderInstrumentMapping | None:
+        """Retrieve a mapping by its permanent UUID."""
+        ...
+
+    async def get_by_provider_identifier(
+        self,
+        provider_id: str,
+        provider_symbol: str,
+        provider_exchange: str | None = None,
+    ) -> ProviderInstrumentMapping | None:
+        """Retrieve the active mapping for a provider identifier."""
+        ...
+
+    async def list_by_instrument_id(
+        self,
+        instrument_id: UUID,
+    ) -> tuple[ProviderInstrumentMapping, ...]:
+        """Retrieve all mappings associated with a canonical instrument."""
+        ...
+
+    async def list_by_provider_id(
+        self,
+        provider_id: str,
+    ) -> tuple[ProviderInstrumentMapping, ...]:
+        """Retrieve all mappings registered for a provider."""
+        ...
+
+    async def add(
+        self,
+        mapping: ProviderInstrumentMapping,
+    ) -> None:
+        """Persist a new provider instrument mapping."""
+        ...
+
+    async def update(
+        self,
+        mapping: ProviderInstrumentMapping,
+    ) -> None:
+        """Update an existing mapping without changing its identity."""
         ...

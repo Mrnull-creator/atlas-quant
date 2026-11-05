@@ -16,7 +16,16 @@ from atlas_quant.services.market_data.infrastructure.persistence.instrument impo
 from atlas_quant.services.market_data.infrastructure.persistence.provider import (
     ProviderORM,  # noqa: F401 - registers the ORM model.
 )
+from atlas_quant.services.market_data.infrastructure.persistence.provider_instrument_mapping import (
+    ProviderInstrumentMappingORM,  # noqa: F401 - registers the ORM model.
+)
 
+from atlas_quant.services.market_data.infrastructure.persistence.dataset import (
+    DatasetORM,  # noqa: F401 - registers the ORM model.
+)
+from atlas_quant.services.market_data.infrastructure.persistence.dataset_version import (
+    DatasetVersionORM,  # noqa: F401 - registers the ORM model.
+)
 
 config = context.config
 
