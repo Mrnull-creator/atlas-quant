@@ -26,6 +26,13 @@ from atlas_quant.services.market_data.infrastructure.persistence.dataset import 
 from atlas_quant.services.market_data.infrastructure.persistence.dataset_version import (
     DatasetVersionORM,  # noqa: F401 - registers the ORM model.
 )
+from atlas_quant.services.market_data.infrastructure.persistence.ingestion_job import (
+    IngestionJobDatasetVersionORM,  # noqa: F401 - registers the ORM model.
+    IngestionJobORM,  # noqa: F401 - registers the ORM model.
+)
+from atlas_quant.services.market_data.infrastructure.persistence.dataset_lineage import (
+    DatasetVersionLineageORM,  # noqa: F401 - registers the ORM model.
+)
 
 config = context.config
 

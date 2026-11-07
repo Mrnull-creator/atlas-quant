@@ -73,3 +73,49 @@ class DatasetVersionRepositoryRecordNotFoundError(
     DatasetVersionRepositoryError
 ):
     """Raised when a requested dataset version does not exist."""
+
+
+class IngestionJobRepositoryError(Exception):
+    """Base exception for ingestion job repository operations."""
+
+
+class IngestionJobRepositoryConflictError(IngestionJobRepositoryError):
+    """Raised when an ingestion job identifier already exists."""
+
+
+class IngestionJobRepositoryRecordNotFoundError(
+    IngestionJobRepositoryError
+):
+    """Raised when a requested ingestion job does not exist."""
+
+
+class IngestionJobRepositoryInvalidTransitionError(
+    IngestionJobRepositoryError
+):
+    """Raised when an ingestion job update violates lifecycle rules."""
+
+
+class IngestionJobRepositoryIntegrityError(IngestionJobRepositoryError):
+    """Raised when ingestion job persistence violates a database constraint."""
+
+
+class DatasetVersionLineageRepositoryError(Exception):
+    """Base exception for dataset-version lineage repository operations."""
+
+
+class DatasetVersionLineageRepositoryConflictError(
+    DatasetVersionLineageRepositoryError
+):
+    """Raised when a lineage identifier already exists."""
+
+
+class DatasetVersionLineageRepositoryRecordNotFoundError(
+    DatasetVersionLineageRepositoryError
+):
+    """Raised when a requested lineage relationship does not exist."""
+
+
+class DatasetVersionLineageRepositoryIntegrityError(
+    DatasetVersionLineageRepositoryError
+):
+    """Raised when lineage persistence violates a database constraint."""
