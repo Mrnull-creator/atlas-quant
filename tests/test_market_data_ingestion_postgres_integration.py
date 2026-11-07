@@ -47,6 +47,9 @@ from atlas_quant.services.market_data.infrastructure.persistence.dataset_lineage
 from atlas_quant.services.market_data.infrastructure.persistence.ingestion_job_repository import (
     SQLAlchemyIngestionJobRepository,
 )
+from atlas_quant.services.market_data.infrastructure.persistence.instrument import (
+    InstrumentORM,
+)
 from atlas_quant.services.market_data.infrastructure.persistence.provider import (
     ProviderORM,
 )
@@ -73,6 +76,7 @@ def test_ingestion_job_and_dataset_lineage_postgresql_round_trip():
         dataset_id = uuid4()
         version_id = uuid4()
         job_id = uuid4()
+        instrument_id = uuid4()
         lineage_id = uuid4()
 
         now = datetime.now(timezone.utc)
@@ -80,6 +84,7 @@ def test_ingestion_job_and_dataset_lineage_postgresql_round_trip():
 
         job = IngestionJob(
             job_id=job_id,
+            instrument_id=instrument_id,
             provider_id=provider_id,
             asset_class=AssetClass.FOREX,
             instrument_symbol="EURUSD",
@@ -101,6 +106,14 @@ def test_ingestion_job_and_dataset_lineage_postgresql_round_trip():
             # database and its foreign-key constraints.
             async with sessions() as session:
                 async with session.begin():
+                    session.add(
+                        InstrumentORM(
+                            instrument_id=instrument_id,
+                            symbol="EURUSD",
+                            asset_class=AssetClass.FOREX,
+                        )
+                    )
+
                     session.add(
                         ProviderORM(
                             provider_id=provider_id,
@@ -152,6 +165,7 @@ def test_ingestion_job_and_dataset_lineage_postgresql_round_trip():
             assert stored_job is not None
             assert stored_job.job_id == job_id
             assert stored_job.provider_id == provider_id
+            assert stored_job.instrument_id == instrument_id
             assert stored_job.status == job.status
 
             await lineage_repository.add(lineage)
@@ -206,6 +220,12 @@ def test_ingestion_job_and_dataset_lineage_postgresql_round_trip():
                     await session.execute(
                         delete(IngestionJobORM).where(
                             IngestionJobORM.job_id == job_id
+                        )
+                    )
+                    await session.execute(
+                        delete(InstrumentORM).where(
+                            InstrumentORM.instrument_id
+                            == instrument_id
                         )
                     )
                     await session.execute(

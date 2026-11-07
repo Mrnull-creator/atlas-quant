@@ -102,7 +102,11 @@ def references(engine):
         session.add(version)
         session.commit()
 
-        return provider.provider_id, version.dataset_version_id
+        return (
+            provider.provider_id,
+            instrument.instrument_id,
+            version.dataset_version_id,
+        )
 
 
 def make_job(provider_id, **overrides):
@@ -154,6 +158,17 @@ def test_job_provider_foreign_key_is_restrictive():
     assert foreign_key.ondelete == "RESTRICT"
 
 
+def test_job_instrument_foreign_key_is_restrictive():
+    foreign_key = next(
+        foreign_key
+        for foreign_key in IngestionJobORM.__table__.foreign_keys
+        if foreign_key.parent.name == "instrument_id"
+    )
+
+    assert foreign_key.target_fullname == "instruments.instrument_id"
+    assert foreign_key.ondelete == "RESTRICT"
+
+
 def test_output_association_has_composite_primary_key():
     table = IngestionJobDatasetVersionORM.__table__
 
@@ -182,10 +197,13 @@ def test_job_and_output_version_can_be_persisted(
     engine,
     references,
 ):
-    provider_id, version_id = references
+    provider_id, instrument_id, version_id = references
 
     with Session(engine) as session:
-        job = make_job(provider_id)
+        job = make_job(
+            provider_id,
+            instrument_id=instrument_id,
+        )
         session.add(job)
         session.flush()
 
@@ -204,6 +222,7 @@ def test_job_and_output_version_can_be_persisted(
         assert persisted is not None
         assert persisted.status == IngestionJobStatus.PENDING
         assert isinstance(persisted.job_id, UUID)
+        assert persisted.instrument_id == instrument_id
 
         persisted_association = session.get(
             IngestionJobDatasetVersionORM,
@@ -221,11 +240,23 @@ def test_job_rejects_unknown_provider(engine):
             session.commit()
 
 
+def test_job_rejects_unknown_instrument(engine, references):
+    provider_id, _, _ = references
+
+    with Session(engine) as session:
+        session.add(
+            make_job(provider_id, instrument_id=uuid4())
+        )
+
+        with pytest.raises(IntegrityError):
+            session.commit()
+
+
 def test_output_association_rejects_unknown_job(
     engine,
     references,
 ):
-    _, version_id = references
+    _, _, version_id = references
 
     with Session(engine) as session:
         session.add(
@@ -243,7 +274,7 @@ def test_output_association_rejects_unknown_dataset_version(
     engine,
     references,
 ):
-    provider_id, _ = references
+    provider_id, _, _ = references
 
     with Session(engine) as session:
         job = make_job(provider_id)
@@ -265,7 +296,7 @@ def test_pending_job_rejects_start_timestamp(
     engine,
     references,
 ):
-    provider_id, _ = references
+    provider_id, _, _ = references
     now = datetime.now(timezone.utc)
 
     with Session(engine) as session:
@@ -284,7 +315,7 @@ def test_running_job_requires_start_timestamp(
     engine,
     references,
 ):
-    provider_id, _ = references
+    provider_id, _, _ = references
 
     with Session(engine) as session:
         session.add(
@@ -302,7 +333,7 @@ def test_failed_job_requires_failure_message(
     engine,
     references,
 ):
-    provider_id, _ = references
+    provider_id, _, _ = references
     now = datetime.now(timezone.utc)
 
     with Session(engine) as session:
@@ -322,7 +353,7 @@ def test_negative_record_count_is_rejected(
     engine,
     references,
 ):
-    provider_id, _ = references
+    provider_id, _, _ = references
 
     with Session(engine) as session:
         session.add(
@@ -340,7 +371,7 @@ def test_invalid_requested_range_is_rejected(
     engine,
     references,
 ):
-    provider_id, _ = references
+    provider_id, _, _ = references
     now = datetime.now(timezone.utc)
 
     with Session(engine) as session:

@@ -140,6 +140,15 @@ class IngestionJobORM(MarketDataBase):
         nullable=False,
     )
 
+    instrument_id: Mapped[UUID | None] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey(
+            "instruments.instrument_id",
+            ondelete="RESTRICT",
+        ),
+        nullable=True,
+    )
+
     instrument_symbol: Mapped[str | None] = mapped_column(
         String,
         nullable=True,

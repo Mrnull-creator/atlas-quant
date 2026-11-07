@@ -177,6 +177,7 @@ def make_job(**overrides):
         "job_id": uuid4(),
         "provider_id": "dukascopy",
         "asset_class": AssetClass.FOREX,
+        "instrument_id": None,
         "instrument_symbol": "EURUSD",
         "timeframe": Timeframe.M1,
         "requested_start": datetime(
@@ -201,6 +202,7 @@ def make_orm_job(**overrides):
         "job_id": uuid4(),
         "provider_id": "dukascopy",
         "asset_class": AssetClass.FOREX,
+        "instrument_id": None,
         "instrument_symbol": "EURUSD",
         "timeframe": Timeframe.M1,
         "requested_start": datetime(
@@ -245,7 +247,19 @@ def test_get_by_id_returns_domain_job():
     assert isinstance(result, IngestionJob)
     assert result.job_id == orm_job.job_id
     assert result.provider_id == "dukascopy"
+    assert result.instrument_id == orm_job.instrument_id
     assert result.status == IngestionJobStatus.PENDING
+
+
+def test_get_by_id_restores_instrument_identity():
+    repository, factory = make_repository()
+    instrument_id = uuid4()
+    orm_job = make_orm_job(instrument_id=instrument_id)
+    factory.jobs[orm_job.job_id] = orm_job
+
+    result = run(repository.get_by_id(orm_job.job_id))
+
+    assert result.instrument_id == instrument_id
 
 
 def test_get_by_id_returns_none_for_missing_job():
@@ -320,6 +334,7 @@ def test_add_persists_job():
 
     assert job.job_id in factory.jobs
     assert factory.jobs[job.job_id].provider_id == job.provider_id
+    assert factory.jobs[job.job_id].instrument_id == job.instrument_id
 
 
 def test_add_persists_dataset_version_associations():
@@ -416,6 +431,23 @@ def test_update_rejects_immutable_identity_change():
     updated = make_job(
         job_id=current.job_id,
         provider_id="another-provider",
+    )
+
+    with pytest.raises(
+        IngestionJobRepositoryInvalidTransitionError
+    ):
+        SQLAlchemyIngestionJobRepository._validate_update(
+            current,
+            updated,
+        )
+
+
+def test_update_rejects_instrument_identity_change():
+    instrument_id = uuid4()
+    current = make_job(instrument_id=instrument_id)
+    updated = make_job(
+        job_id=current.job_id,
+        instrument_id=uuid4(),
     )
 
     with pytest.raises(

@@ -1,4 +1,3 @@
-
 """Domain models for market data ingestion jobs."""
 
 import re
@@ -50,6 +49,7 @@ class IngestionJob:
 
     job_id: UUID = field(default_factory=uuid4)
 
+    instrument_id: UUID | None = None
     instrument_symbol: str | None = None
     timeframe: Timeframe | None = None
 
@@ -75,6 +75,12 @@ class IngestionJob:
 
         if not isinstance(self.job_id, UUID):
             raise TypeError("job_id must be a UUID.")
+
+        if self.instrument_id is not None and not isinstance(
+            self.instrument_id,
+            UUID,
+        ):
+            raise TypeError("instrument_id must be a UUID or None.")
 
         if not isinstance(self.provider_id, str):
             raise TypeError("provider_id must be a string.")
@@ -178,7 +184,6 @@ class IngestionJob:
             raise ValueError(
                 "requested_start must be before requested_end."
             )
-
 
         if (
             self.started_at is not None

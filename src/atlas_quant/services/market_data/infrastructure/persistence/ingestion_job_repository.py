@@ -179,6 +179,7 @@ class SQLAlchemyIngestionJobRepository:
             "job_id",
             "provider_id",
             "asset_class",
+            "instrument_id",
             "instrument_symbol",
             "timeframe",
             "requested_start",
@@ -262,6 +263,7 @@ class SQLAlchemyIngestionJobRepository:
             job_id=orm_job.job_id,
             provider_id=orm_job.provider_id,
             asset_class=orm_job.asset_class,
+            instrument_id=orm_job.instrument_id,
             instrument_symbol=orm_job.instrument_symbol,
             timeframe=orm_job.timeframe,
             requested_start=SQLAlchemyIngestionJobRepository._as_utc(
@@ -296,6 +298,7 @@ class SQLAlchemyIngestionJobRepository:
             job_id=job.job_id,
             provider_id=job.provider_id,
             asset_class=job.asset_class,
+            instrument_id=job.instrument_id,
             instrument_symbol=job.instrument_symbol,
             timeframe=job.timeframe,
             requested_start=job.requested_start,
