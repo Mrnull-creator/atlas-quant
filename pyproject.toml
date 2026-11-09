@@ -23,6 +23,7 @@ dependencies = [
 data = [
     "pyarrow>=20,<30",
     "dukascopy-downloader>=1.1,<2",
+    "boto3>=1.43,<2",
 ]
 broker = [
     "MetaTrader5>=5.0.6231,<6; platform_system == 'Windows'",
