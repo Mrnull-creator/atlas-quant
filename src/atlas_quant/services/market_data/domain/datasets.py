@@ -1,4 +1,3 @@
-
 """Domain models for historical market data datasets."""
 
 import re
@@ -77,9 +76,7 @@ class Dataset:
             symbol = self.instrument_symbol.strip().upper()
 
             if not symbol:
-                raise ValueError(
-                    "instrument_symbol cannot be empty."
-                )
+                raise ValueError("instrument_symbol cannot be empty.")
 
             object.__setattr__(self, "instrument_symbol", symbol)
 
@@ -124,7 +121,15 @@ class Dataset:
 
 @dataclass(frozen=True, slots=True)
 class DatasetVersion:
-    """Represents an immutable snapshot of a logical dataset."""
+    """Represents an immutable snapshot of a logical dataset.
+
+    A normalized version has a record count and observation boundaries.
+    An opaque raw-provider version uses record_count=None because the
+    payload has not necessarily been parsed into market observations.
+
+    size_bytes is nullable to support historical versions created before
+    physical object size was persisted.
+    """
 
     dataset_id: UUID
     version_number: int
@@ -139,7 +144,8 @@ class DatasetVersion:
     first_timestamp: datetime | None = None
     last_timestamp: datetime | None = None
 
-    record_count: int = 0
+    record_count: int | None = 0
+    size_bytes: int | None = None
 
     storage_uri: str | None = None
 
@@ -188,21 +194,36 @@ class DatasetVersion:
             self.storage_format.strip().lower(),
         )
 
-        if (
-            isinstance(self.record_count, bool)
-            or not isinstance(self.record_count, int)
-        ):
-            raise TypeError("record_count must be an integer.")
+        if self.record_count is not None:
+            if (
+                isinstance(self.record_count, bool)
+                or not isinstance(self.record_count, int)
+            ):
+                raise TypeError(
+                    "record_count must be an integer or None."
+                )
 
-        if self.record_count < 0:
-            raise ValueError("record_count cannot be negative.")
+            if self.record_count < 0:
+                raise ValueError("record_count cannot be negative.")
+
+        if self.size_bytes is not None:
+            if (
+                isinstance(self.size_bytes, bool)
+                or not isinstance(self.size_bytes, int)
+            ):
+                raise TypeError(
+                    "size_bytes must be an integer or None."
+                )
+
+            if self.size_bytes < 0:
+                raise ValueError("size_bytes cannot be negative.")
 
         self._validate_timestamp("created_at", self.created_at)
         self._validate_timestamp("first_timestamp", self.first_timestamp)
         self._validate_timestamp("last_timestamp", self.last_timestamp)
         self._validate_timestamp("published_at", self.published_at)
 
-        if self.record_count == 0:
+        if self.record_count is None or self.record_count == 0:
             if (
                 self.first_timestamp is not None
                 or self.last_timestamp is not None
@@ -216,7 +237,8 @@ class DatasetVersion:
                 or self.last_timestamp is None
             ):
                 raise ValueError(
-                    "Non-empty versions require both observation boundaries."
+                    "Versions containing observations require both "
+                    "observation boundaries."
                 )
 
             if self.first_timestamp > self.last_timestamp:
@@ -259,7 +281,7 @@ class DatasetVersion:
             )
 
     def _validate_publication_requirements(self) -> None:
-        """Require complete metadata before publication."""
+        """Require complete storage metadata before publication."""
 
         if self.record_count == 0:
             raise ValueError(

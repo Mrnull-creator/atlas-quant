@@ -19,6 +19,7 @@ from atlas_quant.services.market_data.application.storage import (
     StorageObjectMetadata,
 )
 from atlas_quant.services.market_data.domain.datasets import (
+    DatasetKind,
     DatasetVersion,
     DatasetVersionStatus,
 )
@@ -112,17 +113,17 @@ class SQLAlchemyDatasetLifecycleRepository:
         Dataset locking serializes publication operations for the same
         dataset. An older version may become available after a newer one,
         but it cannot move the latest-version pointer backwards.
+
+        Raw-provider datasets represent opaque source payloads. Their
+        observation count and observation timestamps must therefore be None.
+
+        Normalized datasets must contain at least one observation and
+        provide both observation timestamp boundaries.
         """
 
-        if (
-            metadata.record_count is None
-            or metadata.record_count <= 0
-            or metadata.first_timestamp is None
-            or metadata.last_timestamp is None
-        ):
+        if metadata.record_count == 0:
             raise DatasetLifecycleInvalidPublicationMetadataError(
-                "Publication requires a positive record count and both "
-                "observation timestamps."
+                "Published dataset versions cannot contain zero records."
             )
 
         async with self._session_factory() as session:
@@ -151,6 +152,29 @@ class SQLAlchemyDatasetLifecycleRepository:
                     raise DatasetLifecycleDatasetNotFoundError(
                         f"Dataset {dataset_id} was not found."
                     )
+
+                if dataset.data_kind == DatasetKind.RAW_PROVIDER:
+                    if (
+                        metadata.record_count is not None
+                        or metadata.first_timestamp is not None
+                        or metadata.last_timestamp is not None
+                    ):
+                        raise DatasetLifecycleInvalidPublicationMetadataError(
+                            "Raw provider datasets require an undefined "
+                            "record count and no observation timestamps."
+                        )
+                else:
+                    if (
+                        metadata.record_count is None
+                        or metadata.record_count <= 0
+                        or metadata.first_timestamp is None
+                        or metadata.last_timestamp is None
+                    ):
+                        raise DatasetLifecycleInvalidPublicationMetadataError(
+                            "Normalized dataset publication requires a "
+                            "positive record count and both observation "
+                            "timestamps."
+                        )
 
                 version_result = await session.execute(
                     select(DatasetVersionORM)
@@ -186,6 +210,7 @@ class SQLAlchemyDatasetLifecycleRepository:
                 version.checksum_algorithm = metadata.checksum_algorithm
                 version.checksum = metadata.checksum
                 version.record_count = metadata.record_count
+                version.size_bytes = metadata.size_bytes
                 version.first_timestamp = metadata.first_timestamp
                 version.last_timestamp = metadata.last_timestamp
                 version.published_at = published_at
@@ -345,6 +370,7 @@ class SQLAlchemyDatasetLifecycleRepository:
             first_timestamp=version.first_timestamp,
             last_timestamp=version.last_timestamp,
             record_count=version.record_count,
+            size_bytes=version.size_bytes,
             storage_uri=version.storage_uri,
             checksum_algorithm=version.checksum_algorithm,
             checksum=version.checksum,
@@ -366,6 +392,7 @@ class SQLAlchemyDatasetLifecycleRepository:
             first_timestamp=version.first_timestamp,
             last_timestamp=version.last_timestamp,
             record_count=version.record_count,
+            size_bytes=version.size_bytes,
             storage_uri=version.storage_uri,
             checksum_algorithm=version.checksum_algorithm,
             checksum=version.checksum,

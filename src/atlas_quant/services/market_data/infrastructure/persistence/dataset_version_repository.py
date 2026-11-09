@@ -141,6 +141,7 @@ class SQLAlchemyDatasetVersionRepository:
                 orm_version.last_timestamp
             ),
             record_count=orm_version.record_count,
+            size_bytes=orm_version.size_bytes,
             storage_uri=orm_version.storage_uri,
             checksum_algorithm=orm_version.checksum_algorithm,
             checksum=orm_version.checksum,
@@ -168,6 +169,7 @@ class SQLAlchemyDatasetVersionRepository:
             first_timestamp=version.first_timestamp,
             last_timestamp=version.last_timestamp,
             record_count=version.record_count,
+            size_bytes=version.size_bytes,
             storage_uri=version.storage_uri,
             checksum_algorithm=version.checksum_algorithm,
             checksum=version.checksum,

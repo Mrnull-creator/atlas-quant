@@ -16,6 +16,7 @@ from atlas_quant.services.market_data.application.storage import (
     StorageObjectMetadata,
 )
 from atlas_quant.services.market_data.domain.datasets import (
+    DatasetKind,
     DatasetVersionStatus,
 )
 from atlas_quant.services.market_data.infrastructure.persistence.dataset_lifecycle_repository import (
@@ -94,7 +95,7 @@ def make_metadata(
     first_timestamp=None,
     last_timestamp=None,
 ):
-    if record_count == 0:
+    if record_count is None or record_count == 0:
         first = first_timestamp
         last = last_timestamp
     else:
@@ -110,7 +111,7 @@ def make_metadata(
         )
 
     return StorageObjectMetadata(
-        storage_uri="market-data/ohlcv/test.parquet",
+        storage_uri="market-data/test/test.parquet",
         storage_format=storage_format,
         checksum_algorithm="sha256",
         checksum="a" * 64,
@@ -121,10 +122,15 @@ def make_metadata(
     )
 
 
-def make_dataset(*, latest_version_id=None):
+def make_dataset(
+    *,
+    latest_version_id=None,
+    data_kind=DatasetKind.OHLCV,
+):
     return SimpleNamespace(
         dataset_id=uuid4(),
         latest_version_id=latest_version_id,
+        data_kind=data_kind,
     )
 
 
@@ -147,6 +153,7 @@ def make_version(
         first_timestamp=None,
         last_timestamp=None,
         record_count=0,
+        size_bytes=None,
         storage_uri=None,
         checksum_algorithm=None,
         checksum=None,
@@ -186,8 +193,37 @@ async def test_publish_staging_version_updates_version_and_latest_pointer():
     assert published.checksum_algorithm == metadata.checksum_algorithm
     assert published.checksum == metadata.checksum
     assert published.record_count == metadata.record_count
+    assert published.size_bytes == metadata.size_bytes
     assert published.first_timestamp == metadata.first_timestamp
     assert published.last_timestamp == metadata.last_timestamp
+    assert published.published_at is not None
+
+    assert dataset.latest_version_id == version.dataset_version_id
+    assert session.flush_count == 1
+
+
+@async_test
+async def test_publish_raw_provider_version_without_observation_metadata():
+    dataset = make_dataset(data_kind=DatasetKind.RAW_PROVIDER)
+    version = make_version(dataset.dataset_id)
+    metadata = make_metadata(record_count=None)
+
+    repository, session, _ = make_repository(
+        [dataset.dataset_id, dataset, version]
+    )
+
+    published = await repository.publish_staging_version(
+        version.dataset_version_id,
+        metadata,
+    )
+
+    assert published.status == DatasetVersionStatus.AVAILABLE
+    assert published.record_count is None
+    assert published.first_timestamp is None
+    assert published.last_timestamp is None
+    assert published.size_bytes == metadata.size_bytes
+    assert published.storage_uri == metadata.storage_uri
+    assert published.checksum == metadata.checksum
     assert published.published_at is not None
 
     assert dataset.latest_version_id == version.dataset_version_id
@@ -318,17 +354,10 @@ async def test_publish_rejects_storage_format_mismatch():
     assert session.flush_count == 0
 
 
-@pytest.mark.parametrize(
-    "metadata",
-    [
-        make_metadata(record_count=0),
-        make_metadata(record_count=None),
-    ],
-)
 @async_test
-async def test_publish_rejects_incomplete_metadata_before_database_access(
-    metadata,
-):
+async def test_publish_rejects_zero_record_metadata_before_database_access():
+    metadata = make_metadata(record_count=0)
+
     session = FakeSession([])
     factory = FakeSessionFactory(session)
     repository = SQLAlchemyDatasetLifecycleRepository(factory)
@@ -340,4 +369,23 @@ async def test_publish_rejects_incomplete_metadata_before_database_access(
         )
 
     assert factory.created is False
+    assert session.flush_count == 0
+
+
+@async_test
+async def test_publish_rejects_missing_observation_count_for_normalized_dataset():
+    dataset = make_dataset(data_kind=DatasetKind.OHLCV)
+    metadata = make_metadata(record_count=None)
+
+    session = FakeSession([dataset.dataset_id, dataset])
+    factory = FakeSessionFactory(session)
+    repository = SQLAlchemyDatasetLifecycleRepository(factory)
+
+    with pytest.raises(DatasetLifecycleInvalidPublicationMetadataError):
+        await repository.publish_staging_version(
+            uuid4(),
+            metadata,
+        )
+
+    assert factory.created is True
     assert session.flush_count == 0

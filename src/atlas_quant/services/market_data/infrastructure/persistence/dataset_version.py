@@ -45,11 +45,21 @@ class DatasetVersionORM(MarketDataBase):
             name="version_number_positive",
         ),
         CheckConstraint(
-            "record_count >= 0",
+            "record_count IS NULL OR record_count >= 0",
             name="record_count_nonnegative",
         ),
         CheckConstraint(
+            "size_bytes IS NULL OR size_bytes >= 0",
+            name="size_bytes_nonnegative",
+        ),
+        CheckConstraint(
             """
+            (
+                record_count IS NULL
+                AND first_timestamp IS NULL
+                AND last_timestamp IS NULL
+            )
+            OR
             (
                 record_count = 0
                 AND first_timestamp IS NULL
@@ -83,7 +93,7 @@ class DatasetVersionORM(MarketDataBase):
             """
             (
                 status = 'available'
-                AND record_count > 0
+                AND (record_count IS NULL OR record_count > 0)
                 AND storage_uri IS NOT NULL
                 AND checksum_algorithm IS NOT NULL
                 AND checksum IS NOT NULL
@@ -158,11 +168,16 @@ class DatasetVersionORM(MarketDataBase):
         nullable=True,
     )
 
-    record_count: Mapped[int] = mapped_column(
+    record_count: Mapped[int | None] = mapped_column(
         BigInteger,
-        nullable=False,
+        nullable=True,
         default=0,
         server_default="0",
+    )
+
+    size_bytes: Mapped[int | None] = mapped_column(
+        BigInteger,
+        nullable=True,
     )
 
     storage_uri: Mapped[str | None] = mapped_column(

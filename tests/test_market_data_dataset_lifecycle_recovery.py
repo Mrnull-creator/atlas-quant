@@ -103,6 +103,7 @@ def make_version(
         first_timestamp=None,
         last_timestamp=None,
         record_count=0,
+        size_bytes=None,
         storage_uri=None,
         checksum_algorithm=None,
         checksum=None,
