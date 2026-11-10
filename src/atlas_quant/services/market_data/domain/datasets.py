@@ -107,7 +107,8 @@ class Dataset:
                 raise ValueError(
                     "Raw provider datasets require a provider_id."
                 )
-        else:
+
+        elif self.data_kind == DatasetKind.OHLCV:
             if self.instrument_symbol is None:
                 raise ValueError(
                     "Normalized datasets require an instrument_symbol."
@@ -115,7 +116,18 @@ class Dataset:
 
             if self.timeframe is None:
                 raise ValueError(
-                    "Normalized datasets require a timeframe."
+                    "OHLCV datasets require a timeframe."
+                )
+
+        elif self.data_kind == DatasetKind.BID_ASK:
+            if self.instrument_symbol is None:
+                raise ValueError(
+                    "Normalized datasets require an instrument_symbol."
+                )
+
+            if self.timeframe is not None:
+                raise ValueError(
+                    "Bid/ask datasets must not have a timeframe."
                 )
 
 

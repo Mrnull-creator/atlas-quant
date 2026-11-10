@@ -73,12 +73,14 @@ def make_quote(*, minute=0, symbol="EURUSD"):
 
 
 def make_dataset(kind=DatasetKind.OHLCV):
+    timeframe = Timeframe.M1 if kind == DatasetKind.OHLCV else None
+
     return Dataset(
         name="EURUSD historical data",
         data_kind=kind,
         asset_class=AssetClass.FOREX,
         instrument_symbol="EURUSD",
-        timeframe=Timeframe.M1,
+        timeframe=timeframe,
     )
 
 

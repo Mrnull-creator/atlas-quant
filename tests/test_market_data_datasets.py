@@ -173,15 +173,30 @@ def test_normalized_dataset_requires_instrument(data_kind):
         )
 
 
-@pytest.mark.parametrize(
-    "data_kind",
-    [DatasetKind.OHLCV, DatasetKind.BID_ASK],
-)
-def test_normalized_dataset_requires_timeframe(data_kind):
-    with pytest.raises(ValueError, match="require a timeframe"):
+def test_ohlcv_dataset_requires_timeframe():
+    with pytest.raises(ValueError, match="OHLCV datasets require a timeframe"):
         make_dataset(
-            data_kind=data_kind,
+            data_kind=DatasetKind.OHLCV,
             timeframe=None,
+        )
+
+
+def test_bid_ask_dataset_does_not_require_timeframe():
+    dataset = make_dataset(
+        data_kind=DatasetKind.BID_ASK,
+        timeframe=None,
+    )
+
+    assert dataset.data_kind == DatasetKind.BID_ASK
+    assert dataset.instrument_symbol == "EUR/USD"
+    assert dataset.timeframe is None
+
+
+def test_bid_ask_dataset_rejects_timeframe():
+    with pytest.raises(ValueError, match="must not have a timeframe"):
+        make_dataset(
+            data_kind=DatasetKind.BID_ASK,
+            timeframe=Timeframe.M1,
         )
 
 

@@ -36,9 +36,15 @@ class DatasetORM(MarketDataBase):
             )
             OR
             (
-                data_kind IN ('ohlcv', 'bid_ask')
+                data_kind = 'ohlcv'
                 AND instrument_symbol IS NOT NULL
                 AND timeframe IS NOT NULL
+            )
+            OR
+            (
+                data_kind = 'bid_ask'
+                AND instrument_symbol IS NOT NULL
+                AND timeframe IS NULL
             )
             """,
             name="valid_dataset_identity",
