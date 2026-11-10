@@ -2,16 +2,19 @@
 
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import select, text
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from atlas_quant.services.market_data.application.repository_errors import (
     DatasetRepositoryDuplicateError,
+    DatasetRepositoryError,
     DatasetRepositoryRecordNotFoundError,
 )
 from atlas_quant.services.market_data.domain.datasets import (
     Dataset,
+    DatasetKind,
 )
 from atlas_quant.services.market_data.infrastructure.persistence.dataset import (
     DatasetORM,
@@ -60,6 +63,112 @@ class SQLAlchemyDatasetRepository:
             for item in orm_datasets
         )
 
+    async def get_or_create(
+        self,
+        dataset: Dataset,
+    ) -> tuple[Dataset, bool]:
+        """Atomically retrieve or create a normalized dataset.
+
+        OHLCV identity is (instrument_id, timeframe).
+        BID_ASK identity is (instrument_id).
+
+        Returns (canonical_dataset, created).
+        """
+
+        if dataset.data_kind == DatasetKind.RAW_PROVIDER:
+            raise ValueError(
+                "get_or_create supports normalized datasets only; "
+                "raw provider dataset identity is separate."
+            )
+
+        if dataset.data_kind == DatasetKind.OHLCV:
+            conflict_columns = [
+                DatasetORM.instrument_id,
+                DatasetORM.timeframe,
+            ]
+            conflict_predicate = text("data_kind = 'ohlcv'")
+            identity_conditions = (
+                DatasetORM.data_kind == DatasetKind.OHLCV,
+                DatasetORM.instrument_id == dataset.instrument_id,
+                DatasetORM.timeframe == dataset.timeframe,
+            )
+
+        elif dataset.data_kind == DatasetKind.BID_ASK:
+            conflict_columns = [
+                DatasetORM.instrument_id,
+            ]
+            conflict_predicate = text("data_kind = 'bid_ask'")
+            identity_conditions = (
+                DatasetORM.data_kind == DatasetKind.BID_ASK,
+                DatasetORM.instrument_id == dataset.instrument_id,
+            )
+
+        else:
+            raise ValueError(
+                f"Unsupported normalized dataset kind: {dataset.data_kind!r}."
+            )
+
+        orm_dataset = self._to_orm(dataset)
+
+        statement = (
+            pg_insert(DatasetORM)
+            .values(
+                dataset_id=orm_dataset.dataset_id,
+                instrument_id=orm_dataset.instrument_id,
+                name=orm_dataset.name,
+                data_kind=orm_dataset.data_kind,
+                asset_class=orm_dataset.asset_class,
+                instrument_symbol=orm_dataset.instrument_symbol,
+                provider_id=orm_dataset.provider_id,
+                timeframe=orm_dataset.timeframe,
+                latest_version_id=orm_dataset.latest_version_id,
+            )
+            .on_conflict_do_nothing(
+                index_elements=conflict_columns,
+                index_where=conflict_predicate,
+            )
+            .returning(DatasetORM.dataset_id)
+        )
+
+        try:
+            async with self._session_factory() as session:
+                async with session.begin():
+                    result = await session.execute(statement)
+                    inserted_id = result.scalar_one_or_none()
+
+                    if inserted_id is not None:
+                        return dataset, True
+
+                    existing_statement = select(DatasetORM).where(
+                        *identity_conditions
+                    )
+
+                    existing_result = await session.execute(
+                        existing_statement
+                    )
+                    existing = existing_result.scalar_one_or_none()
+
+                    if existing is not None:
+                        self._validate_existing_instrument_identity(
+                            requested=dataset,
+                            existing=existing,
+                        )
+                        return self._to_domain(existing), False
+
+                    raise DatasetRepositoryError(
+                        "Dataset creation encountered a uniqueness "
+                        "conflict, but the canonical dataset could not "
+                        "be retrieved. Retry the operation."
+                    )
+
+        except IntegrityError as exc:
+            if self._is_primary_key_collision(exc):
+                raise DatasetRepositoryDuplicateError(
+                    f"Dataset ID {dataset.dataset_id} already exists."
+                ) from exc
+
+            raise
+
     async def add(
         self,
         dataset: Dataset,
@@ -75,7 +184,8 @@ class SQLAlchemyDatasetRepository:
         except IntegrityError as exc:
             if self._is_duplicate_dataset(exc):
                 raise DatasetRepositoryDuplicateError(
-                    f"Dataset {dataset.dataset_id} already exists."
+                    f"Dataset {dataset.dataset_id} or its logical identity "
+                    "already exists."
                 ) from exc
 
             raise
@@ -84,12 +194,7 @@ class SQLAlchemyDatasetRepository:
         self,
         dataset: Dataset,
     ) -> None:
-        """Update the name and latest-version pointer only.
-
-        Dataset identity fields remain immutable after creation.
-        The composite database foreign key ensures that a latest
-        version belongs to this dataset.
-        """
+        """Update the name and latest-version pointer only."""
 
         async with self._session_factory() as session:
             async with session.begin():
@@ -111,6 +216,25 @@ class SQLAlchemyDatasetRepository:
                 await session.flush()
 
     @staticmethod
+    def _validate_existing_instrument_identity(
+        *,
+        requested: Dataset,
+        existing: DatasetORM,
+    ) -> None:
+        """Ensure descriptive instrument metadata matches canonical identity."""
+
+        if (
+            existing.instrument_id != requested.instrument_id
+            or existing.instrument_symbol != requested.instrument_symbol
+            or existing.asset_class != requested.asset_class
+        ):
+            raise DatasetRepositoryError(
+                "The existing normalized dataset has instrument metadata "
+                "that conflicts with the requested canonical instrument "
+                f"identity {requested.instrument_id}."
+            )
+
+    @staticmethod
     def _to_domain(
         orm_dataset: DatasetORM,
     ) -> Dataset:
@@ -118,6 +242,7 @@ class SQLAlchemyDatasetRepository:
 
         return Dataset(
             dataset_id=orm_dataset.dataset_id,
+            instrument_id=orm_dataset.instrument_id,
             name=orm_dataset.name,
             data_kind=orm_dataset.data_kind,
             asset_class=orm_dataset.asset_class,
@@ -135,6 +260,7 @@ class SQLAlchemyDatasetRepository:
 
         return DatasetORM(
             dataset_id=dataset.dataset_id,
+            instrument_id=dataset.instrument_id,
             name=dataset.name,
             data_kind=dataset.data_kind,
             asset_class=dataset.asset_class,
@@ -145,10 +271,10 @@ class SQLAlchemyDatasetRepository:
         )
 
     @staticmethod
-    def _is_duplicate_dataset(
+    def _is_primary_key_collision(
         exc: IntegrityError,
     ) -> bool:
-        """Identify only dataset primary-key conflicts."""
+        """Identify a collision on the dataset primary key."""
 
         diagnostic = getattr(exc.orig, "diag", None)
         constraint_name = getattr(
@@ -167,3 +293,25 @@ class SQLAlchemyDatasetRepository:
             or "primary key constraint failed: datasets.dataset_id"
             in message
         )
+
+    @classmethod
+    def _is_duplicate_dataset(
+        cls,
+        exc: IntegrityError,
+    ) -> bool:
+        """Identify primary-key and logical-identity conflicts."""
+
+        if cls._is_primary_key_collision(exc):
+            return True
+
+        diagnostic = getattr(exc.orig, "diag", None)
+        constraint_name = getattr(
+            diagnostic,
+            "constraint_name",
+            None,
+        )
+
+        return constraint_name in {
+            "uq_datasets_ohlcv_instrument_timeframe",
+            "uq_datasets_bid_ask_instrument",
+        }

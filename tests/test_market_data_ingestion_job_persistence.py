@@ -1,4 +1,4 @@
-﻿"""Tests for ingestion job ORM persistence mappings."""
+"""Tests for ingestion job ORM persistence mappings."""
 
 from datetime import datetime, timedelta, timezone
 from uuid import UUID, uuid4
@@ -83,6 +83,7 @@ def references(engine):
             name="EURUSD M1",
             data_kind="ohlcv",
             asset_class=AssetClass.FOREX,
+            instrument_id=instrument.instrument_id,
             instrument_symbol="EURUSD",
             provider_id=None,
             timeframe=Timeframe.M1,

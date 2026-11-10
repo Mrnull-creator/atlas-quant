@@ -96,6 +96,7 @@ class FakeSessionFactory:
 def make_dataset(**overrides):
     values = {
         "dataset_id": uuid4(),
+        "instrument_id": uuid4(),
         "name": "EURUSD hourly",
         "data_kind": DatasetKind.OHLCV,
         "asset_class": AssetClass.FOREX,
@@ -110,6 +111,7 @@ def make_dataset(**overrides):
 def make_orm_dataset(**overrides):
     values = {
         "dataset_id": uuid4(),
+        "instrument_id": uuid4(),
         "name": "EURUSD hourly",
         "data_kind": DatasetKind.OHLCV,
         "asset_class": AssetClass.FOREX,

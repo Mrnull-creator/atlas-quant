@@ -40,6 +40,7 @@ class Dataset:
     asset_class: AssetClass
 
     dataset_id: UUID = field(default_factory=uuid4)
+    instrument_id: UUID | None = None
 
     instrument_symbol: str | None = None
     provider_id: str | None = None
@@ -52,6 +53,11 @@ class Dataset:
 
         if not isinstance(self.dataset_id, UUID):
             raise TypeError("dataset_id must be a UUID.")
+
+        if self.instrument_id is not None and not isinstance(
+            self.instrument_id, UUID
+        ):
+            raise TypeError("instrument_id must be a UUID or None.")
 
         if not isinstance(self.name, str):
             raise TypeError("name must be a string.")
@@ -101,6 +107,12 @@ class Dataset:
         if self.latest_version_id is not None:
             if not isinstance(self.latest_version_id, UUID):
                 raise TypeError("latest_version_id must be a UUID.")
+
+        if self.data_kind in (DatasetKind.OHLCV, DatasetKind.BID_ASK):
+            if self.instrument_id is None:
+                raise ValueError(
+                    "Normalized datasets require an instrument_id."
+                )
 
         if self.data_kind == DatasetKind.RAW_PROVIDER:
             if self.provider_id is None:

@@ -24,6 +24,7 @@ def make_dataset(**overrides) -> Dataset:
         "name": "EUR/USD One Minute",
         "data_kind": DatasetKind.OHLCV,
         "asset_class": AssetClass.FOREX,
+        "instrument_id": uuid4(),
         "instrument_symbol": "EUR/USD",
         "provider_id": "dukascopy",
         "timeframe": Timeframe.M1,
@@ -95,11 +96,13 @@ def test_dataset_normalizes_provider_id():
 def test_dataset_supports_raw_provider_data_without_instrument():
     dataset = make_dataset(
         data_kind=DatasetKind.RAW_PROVIDER,
+        instrument_id=None,
         instrument_symbol=None,
         timeframe=None,
     )
 
     assert dataset.data_kind == DatasetKind.RAW_PROVIDER
+    assert dataset.instrument_id is None
     assert dataset.instrument_symbol is None
     assert dataset.timeframe is None
 
@@ -188,6 +191,7 @@ def test_bid_ask_dataset_does_not_require_timeframe():
     )
 
     assert dataset.data_kind == DatasetKind.BID_ASK
+    assert dataset.instrument_id is not None
     assert dataset.instrument_symbol == "EUR/USD"
     assert dataset.timeframe is None
 
@@ -203,6 +207,16 @@ def test_bid_ask_dataset_rejects_timeframe():
 def test_dataset_rejects_invalid_dataset_id():
     with pytest.raises(TypeError, match="dataset_id"):
         make_dataset(dataset_id="not-a-uuid")
+
+
+def test_dataset_rejects_invalid_instrument_id():
+    with pytest.raises(TypeError, match="instrument_id"):
+        make_dataset(instrument_id="not-a-uuid")
+
+
+def test_normalized_dataset_requires_instrument_id():
+    with pytest.raises(ValueError, match="require an instrument_id"):
+        make_dataset(instrument_id=None)
 
 
 def test_dataset_rejects_invalid_latest_version_id():

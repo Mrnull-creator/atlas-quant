@@ -30,10 +30,7 @@ from atlas_quant.services.market_data.domain.validation import ValidationReport
 class InstrumentRepository(Protocol):
     """Persistence interface for financial instruments."""
 
-    async def get_by_id(
-        self,
-        instrument_id: UUID,
-    ) -> Instrument | None:
+    async def get_by_id(self, instrument_id: UUID) -> Instrument | None:
         """Retrieve an instrument by its permanent UUID."""
         ...
 
@@ -50,17 +47,11 @@ class InstrumentRepository(Protocol):
         """Retrieve all registered instruments."""
         ...
 
-    async def add(
-        self,
-        instrument: Instrument,
-    ) -> None:
+    async def add(self, instrument: Instrument) -> None:
         """Persist a newly registered instrument."""
         ...
 
-    async def update(
-        self,
-        instrument: Instrument,
-    ) -> None:
+    async def update(self, instrument: Instrument) -> None:
         """Update an existing instrument."""
         ...
 
@@ -68,10 +59,7 @@ class InstrumentRepository(Protocol):
 class ProviderRepository(Protocol):
     """Persistence interface for market data providers."""
 
-    async def get_by_id(
-        self,
-        provider_id: str,
-    ) -> MarketDataProvider | None:
+    async def get_by_id(self, provider_id: str) -> MarketDataProvider | None:
         """Retrieve a provider by its identifier."""
         ...
 
@@ -79,17 +67,11 @@ class ProviderRepository(Protocol):
         """Retrieve all registered providers."""
         ...
 
-    async def add(
-        self,
-        provider: MarketDataProvider,
-    ) -> None:
+    async def add(self, provider: MarketDataProvider) -> None:
         """Persist a newly registered provider."""
         ...
 
-    async def update(
-        self,
-        provider: MarketDataProvider,
-    ) -> None:
+    async def update(self, provider: MarketDataProvider) -> None:
         """Update an existing provider."""
         ...
 
@@ -103,6 +85,17 @@ class DatasetRepository(Protocol):
 
     async def list_all(self) -> tuple[Dataset, ...]:
         """Retrieve all registered datasets."""
+        ...
+
+    async def get_or_create(
+        self,
+        dataset: Dataset,
+    ) -> tuple[Dataset, bool]:
+        """Atomically retrieve or create a normalized dataset.
+
+        Returns the canonical dataset and a boolean indicating whether
+        this call created it.
+        """
         ...
 
     async def add(self, dataset: Dataset) -> None:
@@ -250,16 +243,10 @@ class ProviderInstrumentMappingRepository(Protocol):
         """Retrieve all mappings registered for a provider."""
         ...
 
-    async def add(
-        self,
-        mapping: ProviderInstrumentMapping,
-    ) -> None:
+    async def add(self, mapping: ProviderInstrumentMapping) -> None:
         """Persist a new provider instrument mapping."""
         ...
 
-    async def update(
-        self,
-        mapping: ProviderInstrumentMapping,
-    ) -> None:
+    async def update(self, mapping: ProviderInstrumentMapping) -> None:
         """Update an existing mapping without changing its identity."""
         ...

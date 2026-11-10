@@ -7,8 +7,10 @@ from sqlalchemy import (
     Enum,
     ForeignKey,
     ForeignKeyConstraint,
+    Index,
     String,
     Uuid,
+    text,
 )
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -37,17 +39,33 @@ class DatasetORM(MarketDataBase):
             OR
             (
                 data_kind = 'ohlcv'
+                AND instrument_id IS NOT NULL
                 AND instrument_symbol IS NOT NULL
                 AND timeframe IS NOT NULL
             )
             OR
             (
                 data_kind = 'bid_ask'
+                AND instrument_id IS NOT NULL
                 AND instrument_symbol IS NOT NULL
                 AND timeframe IS NULL
             )
             """,
             name="valid_dataset_identity",
+        ),
+        ForeignKeyConstraint(
+            [
+                "instrument_id",
+                "instrument_symbol",
+                "asset_class",
+            ],
+            [
+                "instruments.instrument_id",
+                "instruments.symbol",
+                "instruments.asset_class",
+            ],
+            name="fk_datasets_instrument_identity",
+            ondelete="RESTRICT",
         ),
         ForeignKeyConstraint(
             ["dataset_id", "latest_version_id"],
@@ -59,6 +77,23 @@ class DatasetORM(MarketDataBase):
             ondelete="RESTRICT",
             use_alter=True,
         ),
+
+        Index(
+            "uq_datasets_ohlcv_instrument_timeframe",
+            "instrument_id",
+            "timeframe",
+            unique=True,
+            postgresql_where=text("data_kind = 'ohlcv'"),
+            sqlite_where=text("data_kind = 'ohlcv'"),
+        ),
+        Index(
+            "uq_datasets_bid_ask_instrument",
+            "instrument_id",
+            unique=True,
+            postgresql_where=text("data_kind = 'bid_ask'"),
+            sqlite_where=text("data_kind = 'bid_ask'"),
+        ),
+
     )
 
     dataset_id: Mapped[UUID] = mapped_column(
@@ -96,6 +131,15 @@ class DatasetORM(MarketDataBase):
             name="asset_class_values",
         ),
         nullable=False,
+    )
+
+    instrument_id: Mapped[UUID | None] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey(
+            "instruments.instrument_id",
+            ondelete="RESTRICT",
+        ),
+        nullable=True,
     )
 
     instrument_symbol: Mapped[str | None] = mapped_column(

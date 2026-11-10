@@ -1,4 +1,4 @@
-﻿"""Opt-in PostgreSQL integration test for ingestion persistence."""
+"""Opt-in PostgreSQL integration test for ingestion persistence."""
 
 import asyncio
 import os
@@ -57,7 +57,10 @@ from atlas_quant.services.market_data.infrastructure.persistence.provider import
 
 pytestmark = pytest.mark.skipif(
     os.getenv("ATLAS_RUN_POSTGRES_INTEGRATION") != "1",
-    reason="Set ATLAS_RUN_POSTGRES_INTEGRATION=1 to run PostgreSQL integration tests.",
+    reason=(
+        "Set ATLAS_RUN_POSTGRES_INTEGRATION=1 "
+        "to run PostgreSQL integration tests."
+    ),
 )
 
 
@@ -102,8 +105,7 @@ def test_ingestion_job_and_dataset_lineage_postgresql_round_trip():
         )
 
         try:
-            # Create the prerequisite records using the real PostgreSQL
-            # database and its foreign-key constraints.
+            # Create prerequisite records using PostgreSQL.
             async with sessions() as session:
                 async with session.begin():
                     session.add(
@@ -113,6 +115,10 @@ def test_ingestion_job_and_dataset_lineage_postgresql_round_trip():
                             asset_class=AssetClass.FOREX,
                         )
                     )
+
+                    # Ensure the referenced instrument exists before
+                    # inserting the dataset.
+                    await session.flush()
 
                     session.add(
                         ProviderORM(
@@ -133,6 +139,7 @@ def test_ingestion_job_and_dataset_lineage_postgresql_round_trip():
                     session.add(
                         DatasetORM(
                             dataset_id=dataset_id,
+                            instrument_id=instrument_id,
                             name=f"Integration dataset {token}",
                             data_kind=DatasetKind.OHLCV,
                             asset_class=AssetClass.FOREX,
@@ -140,6 +147,8 @@ def test_ingestion_job_and_dataset_lineage_postgresql_round_trip():
                             timeframe=Timeframe.M1,
                         )
                     )
+
+                    await session.flush()
 
                     session.add(
                         DatasetVersionORM(
@@ -211,34 +220,40 @@ def test_ingestion_job_and_dataset_lineage_postgresql_round_trip():
                             == lineage_id
                         )
                     )
+
                     await session.execute(
                         delete(IngestionJobDatasetVersionORM).where(
                             IngestionJobDatasetVersionORM.job_id
                             == job_id
                         )
                     )
+
                     await session.execute(
                         delete(IngestionJobORM).where(
                             IngestionJobORM.job_id == job_id
                         )
                     )
-                    await session.execute(
-                        delete(InstrumentORM).where(
-                            InstrumentORM.instrument_id
-                            == instrument_id
-                        )
-                    )
+
                     await session.execute(
                         delete(DatasetVersionORM).where(
                             DatasetVersionORM.dataset_version_id
                             == version_id
                         )
                     )
+
                     await session.execute(
                         delete(DatasetORM).where(
                             DatasetORM.dataset_id == dataset_id
                         )
                     )
+
+                    await session.execute(
+                        delete(InstrumentORM).where(
+                            InstrumentORM.instrument_id
+                            == instrument_id
+                        )
+                    )
+
                     await session.execute(
                         delete(ProviderORM).where(
                             ProviderORM.provider_id == provider_id
@@ -246,6 +261,16 @@ def test_ingestion_job_and_dataset_lineage_postgresql_round_trip():
                     )
 
     try:
-        asyncio.run(scenario(), loop_factory=lambda: asyncio.SelectorEventLoop(selectors.SelectSelector()))
+        asyncio.run(
+            scenario(),
+            loop_factory=lambda: asyncio.SelectorEventLoop(
+                selectors.SelectSelector()
+            ),
+        )
     finally:
-        asyncio.run(engine.dispose(), loop_factory=lambda: asyncio.SelectorEventLoop(selectors.SelectSelector()))
+        asyncio.run(
+            engine.dispose(),
+            loop_factory=lambda: asyncio.SelectorEventLoop(
+                selectors.SelectSelector()
+            ),
+        )

@@ -77,6 +77,7 @@ def make_dataset(kind=DatasetKind.OHLCV):
 
     return Dataset(
         name="EURUSD historical data",
+        instrument_id=uuid4(),
         data_kind=kind,
         asset_class=AssetClass.FOREX,
         instrument_symbol="EURUSD",

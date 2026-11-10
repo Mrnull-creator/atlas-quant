@@ -34,6 +34,12 @@ class InstrumentORM(MarketDataBase):
             name="uq_instruments_business_key",
             postgresql_nulls_not_distinct=True,
         ),
+        UniqueConstraint(
+            "instrument_id",
+            "symbol",
+            "asset_class",
+            name="uq_instruments_identity_reference",
+        ),
         CheckConstraint(
             "price_precision >= 0",
             name="price_precision_nonnegative",

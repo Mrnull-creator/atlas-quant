@@ -87,6 +87,7 @@ def references(engine):
                 name="EURUSD source",
                 data_kind="ohlcv",
                 asset_class=AssetClass.FOREX,
+                instrument_id=instrument.instrument_id,
                 instrument_symbol="EURUSD",
                 provider_id=None,
                 timeframe=Timeframe.M1,
@@ -95,9 +96,10 @@ def references(engine):
                 name="EURUSD target",
                 data_kind="ohlcv",
                 asset_class=AssetClass.FOREX,
+                instrument_id=instrument.instrument_id,
                 instrument_symbol="EURUSD",
                 provider_id=None,
-                timeframe=Timeframe.M1,
+                timeframe=Timeframe.H1,
             ),
         ]
 
