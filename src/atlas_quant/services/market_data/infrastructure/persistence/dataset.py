@@ -77,7 +77,6 @@ class DatasetORM(MarketDataBase):
             ondelete="RESTRICT",
             use_alter=True,
         ),
-
         Index(
             "uq_datasets_ohlcv_instrument_timeframe",
             "instrument_id",
@@ -93,7 +92,20 @@ class DatasetORM(MarketDataBase):
             postgresql_where=text("data_kind = 'bid_ask'"),
             sqlite_where=text("data_kind = 'bid_ask'"),
         ),
-
+        Index(
+            "uq_datasets_raw_provider_instrument",
+            "provider_id",
+            "instrument_id",
+            unique=True,
+            postgresql_where=text(
+                "data_kind = 'raw_provider' "
+                "AND instrument_id IS NOT NULL"
+            ),
+            sqlite_where=text(
+                "data_kind = 'raw_provider' "
+                "AND instrument_id IS NOT NULL"
+            ),
+        ),
     )
 
     dataset_id: Mapped[UUID] = mapped_column(

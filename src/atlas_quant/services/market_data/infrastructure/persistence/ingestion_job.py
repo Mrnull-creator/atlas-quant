@@ -14,6 +14,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import Mapped, mapped_column
 
+from atlas_quant.services.market_data.domain.datasets import DatasetKind
 from atlas_quant.services.market_data.domain.enums import (
     AssetClass,
     Timeframe,
@@ -47,6 +48,33 @@ class IngestionJobORM(MarketDataBase):
         CheckConstraint(
             "records_rejected >= 0",
             name="records_rejected_nonnegative",
+        ),
+        CheckConstraint(
+            """
+            (
+                data_kind IS NULL
+                AND provider_mapping_id IS NULL
+            )
+            OR
+            (
+                data_kind IS NOT NULL
+                AND data_kind IN ('ohlcv', 'bid_ask')
+                AND provider_mapping_id IS NOT NULL
+                AND instrument_id IS NOT NULL
+                AND (
+                    (
+                        data_kind = 'ohlcv'
+                        AND timeframe IS NOT NULL
+                    )
+                    OR
+                    (
+                        data_kind = 'bid_ask'
+                        AND timeframe IS NULL
+                    )
+                )
+            )
+            """,
+            name="valid_request_identity",
         ),
         CheckConstraint(
             """
@@ -163,6 +191,29 @@ class IngestionJobORM(MarketDataBase):
             native_enum=False,
             create_constraint=True,
             name="ingestion_timeframe_values",
+        ),
+        nullable=True,
+    )
+
+    data_kind: Mapped[DatasetKind | None] = mapped_column(
+        Enum(
+            DatasetKind,
+            values_callable=lambda enum_type: [
+                member.value for member in enum_type
+            ],
+            native_enum=False,
+            create_constraint=False,
+            name="ingestion_data_kind_values",
+        ),
+        nullable=True,
+    )
+
+    provider_mapping_id: Mapped[UUID | None] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey(
+            "provider_instrument_mappings.mapping_id",
+            name="fk_ingestion_jobs_provider_mapping_id",
+            ondelete="RESTRICT",
         ),
         nullable=True,
     )

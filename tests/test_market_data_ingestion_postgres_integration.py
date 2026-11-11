@@ -53,7 +53,9 @@ from atlas_quant.services.market_data.infrastructure.persistence.instrument impo
 from atlas_quant.services.market_data.infrastructure.persistence.provider import (
     ProviderORM,
 )
-
+from atlas_quant.services.market_data.infrastructure.persistence.provider_instrument_mapping import (
+    ProviderInstrumentMappingORM,
+)
 
 pytestmark = pytest.mark.skipif(
     os.getenv("ATLAS_RUN_POSTGRES_INTEGRATION") != "1",

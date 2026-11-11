@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from enum import StrEnum
 from uuid import UUID, uuid4
 
+from atlas_quant.services.market_data.domain.datasets import DatasetKind
 from atlas_quant.services.market_data.domain.enums import (
     AssetClass,
     Timeframe,
@@ -39,6 +40,10 @@ class IngestionJob:
 
     A job may produce multiple dataset versions. The job records their
     identities but does not own or modify those dataset versions.
+
+    data_kind and provider_mapping_id are optional together to preserve
+    compatibility with historical jobs created before request identity
+    was recorded. New ingestion workflows must supply both.
     """
 
     provider_id: str
@@ -52,6 +57,9 @@ class IngestionJob:
     instrument_id: UUID | None = None
     instrument_symbol: str | None = None
     timeframe: Timeframe | None = None
+
+    data_kind: DatasetKind | None = None
+    provider_mapping_id: UUID | None = None
 
     status: IngestionJobStatus = IngestionJobStatus.PENDING
 
@@ -81,6 +89,14 @@ class IngestionJob:
             UUID,
         ):
             raise TypeError("instrument_id must be a UUID or None.")
+
+        if self.provider_mapping_id is not None and not isinstance(
+            self.provider_mapping_id,
+            UUID,
+        ):
+            raise TypeError(
+                "provider_mapping_id must be a UUID or None."
+            )
 
         if not isinstance(self.provider_id, str):
             raise TypeError("provider_id must be a string.")
@@ -121,6 +137,8 @@ class IngestionJob:
                 raise TypeError(
                     "timeframe must be a Timeframe value or None."
                 )
+
+        self._validate_request_identity()
 
         for field_name in (
             "records_downloaded",
@@ -207,6 +225,42 @@ class IngestionJob:
             )
 
         self._validate_lifecycle()
+
+    def _validate_request_identity(self) -> None:
+        """Validate the optional, backward-compatible request identity."""
+
+        if self.data_kind is None and self.provider_mapping_id is None:
+            return
+
+        if self.data_kind is None or self.provider_mapping_id is None:
+            raise ValueError(
+                "data_kind and provider_mapping_id must be provided together."
+            )
+
+        if not isinstance(self.data_kind, DatasetKind):
+            raise TypeError("data_kind must be a DatasetKind value.")
+
+        if self.data_kind == DatasetKind.RAW_PROVIDER:
+            raise ValueError(
+                "Ingestion requests must use OHLCV or BID_ASK data_kind."
+            )
+
+        if self.instrument_id is None:
+            raise ValueError(
+                "Ingestion request identity requires an instrument_id."
+            )
+
+        if self.data_kind == DatasetKind.OHLCV:
+            if self.timeframe is None:
+                raise ValueError(
+                    "OHLCV ingestion requests require a timeframe."
+                )
+
+        elif self.data_kind == DatasetKind.BID_ASK:
+            if self.timeframe is not None:
+                raise ValueError(
+                    "BID_ASK ingestion requests must not have a timeframe."
+                )
 
     def _validate_lifecycle(self) -> None:
         """Enforce status-specific lifecycle requirements."""

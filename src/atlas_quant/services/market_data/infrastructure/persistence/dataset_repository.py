@@ -78,7 +78,7 @@ class SQLAlchemyDatasetRepository:
         if dataset.data_kind == DatasetKind.RAW_PROVIDER:
             raise ValueError(
                 "get_or_create supports normalized datasets only; "
-                "raw provider dataset identity is separate."
+                "use get_or_create_raw for raw provider datasets."
             )
 
         if dataset.data_kind == DatasetKind.OHLCV:
@@ -169,6 +169,107 @@ class SQLAlchemyDatasetRepository:
 
             raise
 
+    async def get_or_create_raw(
+        self,
+        dataset: Dataset,
+    ) -> tuple[Dataset, bool]:
+        """Atomically retrieve or create a raw provider dataset.
+
+        Raw dataset identity is (provider_id, instrument_id).
+        The canonical instrument UUID is required. Provider mapping
+        identity is deliberately retained by the ingestion job instead.
+
+        Returns (canonical_dataset, created).
+        """
+
+        if dataset.data_kind != DatasetKind.RAW_PROVIDER:
+            raise ValueError(
+                "get_or_create_raw supports RAW_PROVIDER datasets only."
+            )
+
+        if not dataset.provider_id:
+            raise ValueError(
+                "Raw provider datasets require a provider_id."
+            )
+
+        if dataset.instrument_id is None:
+            raise ValueError(
+                "New raw provider datasets require a canonical instrument_id."
+            )
+
+        orm_dataset = self._to_orm(dataset)
+
+        statement = (
+            pg_insert(DatasetORM)
+            .values(
+                dataset_id=orm_dataset.dataset_id,
+                instrument_id=orm_dataset.instrument_id,
+                name=orm_dataset.name,
+                data_kind=orm_dataset.data_kind,
+                asset_class=orm_dataset.asset_class,
+                instrument_symbol=orm_dataset.instrument_symbol,
+                provider_id=orm_dataset.provider_id,
+                timeframe=orm_dataset.timeframe,
+                latest_version_id=orm_dataset.latest_version_id,
+            )
+            .on_conflict_do_nothing(
+                index_elements=[
+                    DatasetORM.provider_id,
+                    DatasetORM.instrument_id,
+                ],
+                index_where=text(
+                    "data_kind = 'raw_provider' "
+                    "AND instrument_id IS NOT NULL"
+                ),
+            )
+            .returning(DatasetORM.dataset_id)
+        )
+
+        identity_conditions = (
+            DatasetORM.data_kind == DatasetKind.RAW_PROVIDER,
+            DatasetORM.provider_id == dataset.provider_id,
+            DatasetORM.instrument_id == dataset.instrument_id,
+        )
+
+        try:
+            async with self._session_factory() as session:
+                async with session.begin():
+                    result = await session.execute(statement)
+                    inserted_id = result.scalar_one_or_none()
+
+                    if inserted_id is not None:
+                        return dataset, True
+
+                    existing_statement = select(DatasetORM).where(
+                        *identity_conditions
+                    )
+
+                    existing_result = await session.execute(
+                        existing_statement
+                    )
+                    existing = existing_result.scalar_one_or_none()
+
+                    if existing is not None:
+                        self._validate_existing_raw_identity(
+                            requested=dataset,
+                            existing=existing,
+                        )
+                        return self._to_domain(existing), False
+
+                    raise DatasetRepositoryError(
+                        "Raw dataset creation encountered a uniqueness "
+                        "conflict, but the canonical dataset could not "
+                        "be retrieved. Retry the operation."
+                    )
+
+        except IntegrityError as exc:
+            if self._is_primary_key_collision(exc):
+                raise DatasetRepositoryDuplicateError(
+                    f"Dataset ID {dataset.dataset_id} already exists."
+                ) from exc
+
+            raise
+
     async def add(
         self,
         dataset: Dataset,
@@ -232,6 +333,31 @@ class SQLAlchemyDatasetRepository:
                 "The existing normalized dataset has instrument metadata "
                 "that conflicts with the requested canonical instrument "
                 f"identity {requested.instrument_id}."
+            )
+
+    @staticmethod
+    def _validate_existing_raw_identity(
+        *,
+        requested: Dataset,
+        existing: DatasetORM,
+    ) -> None:
+        """Ensure raw dataset metadata agrees with its canonical identity."""
+
+        if (
+            existing.provider_id != requested.provider_id
+            or existing.instrument_id != requested.instrument_id
+            or existing.asset_class != requested.asset_class
+            or (
+                existing.instrument_symbol is not None
+                and requested.instrument_symbol is not None
+                and existing.instrument_symbol
+                != requested.instrument_symbol
+            )
+        ):
+            raise DatasetRepositoryError(
+                "The existing raw provider dataset has metadata that "
+                "conflicts with the requested provider/instrument identity "
+                f"({requested.provider_id}, {requested.instrument_id})."
             )
 
     @staticmethod
@@ -314,4 +440,5 @@ class SQLAlchemyDatasetRepository:
         return constraint_name in {
             "uq_datasets_ohlcv_instrument_timeframe",
             "uq_datasets_bid_ask_instrument",
+            "uq_datasets_raw_provider_instrument",
         }

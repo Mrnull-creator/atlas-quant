@@ -13,6 +13,7 @@ from atlas_quant.services.market_data.application.repository_errors import (
     IngestionJobRepositoryInvalidTransitionError,
     IngestionJobRepositoryRecordNotFoundError,
 )
+from atlas_quant.services.market_data.domain.datasets import DatasetKind
 from atlas_quant.services.market_data.domain.ingestion import (
     IngestionJob,
     IngestionJobStatus,
@@ -182,6 +183,8 @@ class SQLAlchemyIngestionJobRepository:
             "instrument_id",
             "instrument_symbol",
             "timeframe",
+            "data_kind",
+            "provider_mapping_id",
             "requested_start",
             "requested_end",
             "created_at",
@@ -266,6 +269,12 @@ class SQLAlchemyIngestionJobRepository:
             instrument_id=orm_job.instrument_id,
             instrument_symbol=orm_job.instrument_symbol,
             timeframe=orm_job.timeframe,
+            data_kind=(
+                DatasetKind(orm_job.data_kind)
+                if orm_job.data_kind is not None
+                else None
+            ),
+            provider_mapping_id=orm_job.provider_mapping_id,
             requested_start=SQLAlchemyIngestionJobRepository._as_utc(
                 orm_job.requested_start
             ),
@@ -301,6 +310,8 @@ class SQLAlchemyIngestionJobRepository:
             instrument_id=job.instrument_id,
             instrument_symbol=job.instrument_symbol,
             timeframe=job.timeframe,
+            data_kind=job.data_kind,
+            provider_mapping_id=job.provider_mapping_id,
             requested_start=job.requested_start,
             requested_end=job.requested_end,
             status=job.status,
