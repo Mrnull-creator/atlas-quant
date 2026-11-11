@@ -69,6 +69,7 @@ def test_dataset_get_or_create_postgresql():
         repository = SQLAlchemyDatasetRepository(sessions)
 
         try:
+            # Create the canonical instrument and test providers.
             async with sessions() as session:
                 async with session.begin():
                     session.add(
@@ -113,7 +114,7 @@ def test_dataset_get_or_create_postgresql():
                     )
 
             # Two independent requests attempt to create the same
-            # OHLCV identity at the same time.
+            # OHLCV identity concurrently.
             first_request = Dataset(
                 dataset_id=uuid4(),
                 instrument_id=instrument_id,
@@ -149,7 +150,7 @@ def test_dataset_get_or_create_postgresql():
                 == second_result[0].dataset_id
             )
 
-            # A later request from the other provider is idempotent.
+            # A later request from another provider is idempotent.
             repeated_dataset, repeated_created = (
                 await repository.get_or_create(
                     Dataset(
@@ -172,7 +173,7 @@ def test_dataset_get_or_create_postgresql():
             )
 
             # Reusing an existing primary key for a different
-            # logical identity must raise the repository exception.
+            # logical identity must raise a duplicate error.
             with pytest.raises(DatasetRepositoryDuplicateError):
                 await repository.get_or_create(
                     Dataset(
@@ -267,7 +268,8 @@ def test_dataset_get_or_create_postgresql():
                     )
                 )
 
-            # Three logical datasets exist: M1, H1, and BID_ASK.
+            # Exactly three logical datasets should exist: M1, H1,
+            # and BID_ASK. The primary-key collision must not add one.
             async with sessions() as session:
                 count_statement = (
                     select(func.count())
@@ -282,6 +284,7 @@ def test_dataset_get_or_create_postgresql():
             assert count == 3
 
         finally:
+            # Delete dependent datasets before their referenced rows.
             async with sessions() as session:
                 async with session.begin():
                     await session.execute(
