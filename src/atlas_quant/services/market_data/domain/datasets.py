@@ -21,11 +21,13 @@ class DatasetKind(StrEnum):
 
 
 class DatasetVersionStatus(StrEnum):
-    """Publication lifecycle of a dataset version."""
+    """Lifecycle states of a dataset version."""
 
     STAGING = "staging"
+    VERIFIED = "verified"
     AVAILABLE = "available"
     FAILED = "failed"
+    ABANDONED = "abandoned"
 
 
 @dataclass(frozen=True, slots=True)
@@ -127,9 +129,7 @@ class Dataset:
                 )
 
             if self.timeframe is None:
-                raise ValueError(
-                    "OHLCV datasets require a timeframe."
-                )
+                raise ValueError("OHLCV datasets require a timeframe.")
 
         elif self.data_kind == DatasetKind.BID_ASK:
             if self.instrument_symbol is None:
@@ -148,8 +148,23 @@ class DatasetVersion:
     """Represents an immutable snapshot of a logical dataset.
 
     A normalized version has a record count and observation boundaries.
-    An opaque raw-provider version uses record_count=None because the
+
+    An opaque raw-provider version may use record_count=None because its
     payload has not necessarily been parsed into market observations.
+
+    The lifecycle is:
+
+        STAGING -> VERIFIED -> AVAILABLE
+
+    A version may instead become FAILED or ABANDONED.
+
+    AVAILABLE is retained as the persisted publication state for
+    compatibility with existing dataset versions. In the recovery
+    architecture, AVAILABLE represents a published version.
+
+    verified_at and ingestion_attempt_id are optional to preserve
+    compatibility with historical versions and versions created by
+    workflows that are not associated with an ingestion attempt.
 
     size_bytes is nullable to support historical versions created before
     physical object size was persisted.
@@ -181,6 +196,10 @@ class DatasetVersion:
     )
     published_at: datetime | None = None
 
+    # Recovery-model fields are appended to preserve positional callers.
+    verified_at: datetime | None = None
+    ingestion_attempt_id: UUID | None = None
+
     def __post_init__(self) -> None:
         """Validate dataset version metadata."""
 
@@ -189,6 +208,13 @@ class DatasetVersion:
 
         if not isinstance(self.dataset_version_id, UUID):
             raise TypeError("dataset_version_id must be a UUID.")
+
+        if self.ingestion_attempt_id is not None and not isinstance(
+            self.ingestion_attempt_id, UUID
+        ):
+            raise TypeError(
+                "ingestion_attempt_id must be a UUID or None."
+            )
 
         if (
             isinstance(self.version_number, bool)
@@ -218,6 +244,18 @@ class DatasetVersion:
             self.storage_format.strip().lower(),
         )
 
+        self._validate_counts()
+
+        self._validate_timestamps()
+
+        self._validate_observation_boundaries()
+
+        self._validate_storage_metadata()
+
+        self._validate_lifecycle()
+    def _validate_counts(self) -> None:
+        """Validate record count and physical storage size."""
+
         if self.record_count is not None:
             if (
                 isinstance(self.record_count, bool)
@@ -242,10 +280,48 @@ class DatasetVersion:
             if self.size_bytes < 0:
                 raise ValueError("size_bytes cannot be negative.")
 
+    def _validate_timestamps(self) -> None:
+        """Validate and normalize lifecycle timestamps."""
+
         self._validate_timestamp("created_at", self.created_at)
-        self._validate_timestamp("first_timestamp", self.first_timestamp)
-        self._validate_timestamp("last_timestamp", self.last_timestamp)
-        self._validate_timestamp("published_at", self.published_at)
+
+        for field_name in (
+            "first_timestamp",
+            "last_timestamp",
+            "verified_at",
+            "published_at",
+        ):
+            value = getattr(self, field_name)
+            if value is not None:
+                self._validate_timestamp(field_name, value)
+
+        if (
+            self.verified_at is not None
+            and self.verified_at < self.created_at
+        ):
+            raise ValueError(
+                "verified_at cannot be before created_at."
+            )
+
+        if (
+            self.published_at is not None
+            and self.published_at < self.created_at
+        ):
+            raise ValueError(
+                "published_at cannot be before created_at."
+            )
+
+        if (
+            self.verified_at is not None
+            and self.published_at is not None
+            and self.verified_at > self.published_at
+        ):
+            raise ValueError(
+                "verified_at cannot be after published_at."
+            )
+
+    def _validate_observation_boundaries(self) -> None:
+        """Validate first and last observation timestamps."""
 
         if self.record_count is None or self.record_count == 0:
             if (
@@ -270,6 +346,9 @@ class DatasetVersion:
                     "first_timestamp cannot be after last_timestamp."
                 )
 
+    def _validate_storage_metadata(self) -> None:
+        """Validate and normalize optional storage metadata."""
+
         self._validate_optional_text("storage_uri", self.storage_uri)
 
         self._validate_optional_text(
@@ -290,18 +369,91 @@ class DatasetVersion:
                 self.checksum_algorithm.lower(),
             )
 
-        if self.published_at is not None:
-            if self.published_at < self.created_at:
+    def _validate_lifecycle(self) -> None:
+        """Enforce status-specific version lifecycle requirements."""
+
+        if self.status == DatasetVersionStatus.STAGING:
+            if self.verified_at is not None:
                 raise ValueError(
-                    "published_at cannot be before created_at."
+                    "Staging versions cannot have verified_at."
                 )
 
-        if self.status == DatasetVersionStatus.AVAILABLE:
+            if self.published_at is not None:
+                raise ValueError(
+                    "Only available versions can have published_at."
+                )
+
+        elif self.status == DatasetVersionStatus.VERIFIED:
+            if self.published_at is not None:
+                raise ValueError(
+                    "Verified versions cannot have published_at."
+                )
+
+            if self.verified_at is None:
+                raise ValueError(
+                    "Verified versions require verified_at."
+                )
+
+            self._validate_storage_requirements(
+                "Verified versions"
+            )
+
+        elif self.status == DatasetVersionStatus.AVAILABLE:
+            self._validate_storage_requirements(
+                "Available versions"
+            )
             self._validate_publication_requirements()
 
-        elif self.published_at is not None:
+            # verified_at intentionally remains optional for historical
+            # AVAILABLE versions created before this lifecycle extension.
+
+        elif self.status == DatasetVersionStatus.FAILED:
+            if self.verified_at is not None:
+                raise ValueError(
+                    "Failed versions cannot have verified_at."
+                )
+
+            if self.published_at is not None:
+                raise ValueError(
+                    "Only available versions can have published_at."
+                )
+
+        elif self.status == DatasetVersionStatus.ABANDONED:
+            if self.published_at is not None:
+                raise ValueError(
+                    "Abandoned versions cannot have published_at."
+                )
+
+            # An abandoned version may have been verified before the
+            # execution that owned it was abandoned.
+
+    def _validate_storage_requirements(
+        self,
+        lifecycle_name: str,
+    ) -> None:
+        """Require complete storage metadata before verification/publication.
+
+        record_count=None is intentionally permitted for opaque
+        raw-provider payloads. A known record_count of zero is not
+        permitted for verified or published versions.
+        """
+
+        if self.record_count == 0:
             raise ValueError(
-                "Only available versions can have published_at."
+                f"{lifecycle_name} must contain at least one record."
+            )
+
+        if self.storage_uri is None:
+            raise ValueError(
+                f"{lifecycle_name} require a storage_uri."
+            )
+
+        if (
+            self.checksum_algorithm is None
+            or self.checksum is None
+        ):
+            raise ValueError(
+                f"{lifecycle_name} require checksum metadata."
             )
 
     def _validate_publication_requirements(self) -> None:
@@ -328,7 +480,12 @@ class DatasetVersion:
             )
 
     @staticmethod
-    def _validate_text(field_name: str, value: str) -> None:
+    def _validate_text(
+        field_name: str,
+        value: str,
+    ) -> None:
+        """Validate a required non-empty text value."""
+
         if not isinstance(value, str):
             raise TypeError(f"{field_name} must be a string.")
 
@@ -340,6 +497,8 @@ class DatasetVersion:
         field_name: str,
         value: str | None,
     ) -> None:
+        """Validate and normalize an optional text value."""
+
         if value is None:
             return
 
@@ -353,18 +512,23 @@ class DatasetVersion:
         if not normalized:
             raise ValueError(f"{field_name} cannot be empty.")
 
-        object.__setattr__(self, field_name, normalized)
+        object.__setattr__(
+            self,
+            field_name,
+            normalized,
+        )
 
     def _validate_timestamp(
         self,
         field_name: str,
-        value: datetime | None,
+        value: datetime,
     ) -> None:
-        if value is None:
-            return
+        """Validate a timezone-aware timestamp and normalize it to UTC."""
 
         if not isinstance(value, datetime):
-            raise TypeError(f"{field_name} must be a datetime value.")
+            raise TypeError(
+                f"{field_name} must be a datetime value."
+            )
 
         if value.tzinfo is None or value.utcoffset() is None:
             raise ValueError(

@@ -1,8 +1,9 @@
 """Application service for publishing immutable market data versions."""
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Iterator
+from datetime import datetime
 from dataclasses import dataclass
-from typing import Protocol
+from typing import Generic, Protocol, TypeVar
 from uuid import UUID
 
 from atlas_quant.services.market_data.application.dataset_lifecycle import (
@@ -35,8 +36,26 @@ from atlas_quant.services.market_data.domain.quality import (
     DataQualityReport,
     FindingSeverity,
     QualityFinding,
+    QualityFindingAccumulator,
 )
 from atlas_quant.services.market_data.domain.quotes import BidAskQuote
+from atlas_quant.services.market_data.domain.ingestion_attempt import IngestionAttempt
+
+
+ObservationT = TypeVar("ObservationT")
+
+
+class _ValidationSession(Protocol, Generic[ObservationT]):
+    """Common interface for incremental validation sessions."""
+
+    def add(self, observation: ObservationT) -> bool:
+        ...
+
+    def finish(self) -> DataQualityReport:
+        ...
+
+    def close(self) -> None:
+        ...
 
 
 class VerifiableOHLCVStorage(OHLCVStorage, Protocol):
@@ -47,7 +66,6 @@ class VerifiableOHLCVStorage(OHLCVStorage, Protocol):
         dataset_version_id: UUID,
         expected: StorageObjectMetadata,
     ) -> None:
-        """Verify the persisted object against its expected metadata."""
         ...
 
 
@@ -59,7 +77,6 @@ class VerifiableQuoteStorage(QuoteStorage, Protocol):
         dataset_version_id: UUID,
         expected: StorageObjectMetadata,
     ) -> None:
-        """Verify the persisted object against its expected metadata."""
         ...
 
 
@@ -74,8 +91,24 @@ class DatasetPublicationDatasetKindError(DatasetPublicationError):
 class DatasetPublicationRejectedError(DatasetPublicationError):
     """Raised when pre-publication quality checks reject observations."""
 
-    def __init__(self, report: DataQualityReport) -> None:
+    def __init__(
+        self,
+        report: DataQualityReport,
+        *,
+        rejected_record_count: int = 0,
+    ) -> None:
+        if (
+            isinstance(rejected_record_count, bool)
+            or not isinstance(rejected_record_count, int)
+            or rejected_record_count < 0
+        ):
+            raise ValueError(
+                "rejected_record_count must be a non-negative integer."
+            )
+
         self.report = report
+        self.rejected_record_count = rejected_record_count
+
         super().__init__(
             "Dataset publication rejected: "
             f"{report.error_count} quality error(s) found."
@@ -94,8 +127,35 @@ class DatasetPublicationResult:
     quality_report: DataQualityReport
 
 
+@dataclass(slots=True)
+class _StreamStatistics:
+    """Constant-memory statistics collected during streaming."""
+
+    record_count: int = 0
+    rejected_record_count: int = 0
+    first_timestamp: datetime | None = None
+    last_timestamp: datetime | None = None
+
+    def observe(
+        self,
+        timestamp: datetime,
+        *,
+        rejected: bool = False,
+    ) -> None:
+        self.record_count += 1
+
+        if rejected:
+            self.rejected_record_count += 1
+
+        if self.first_timestamp is None or timestamp < self.first_timestamp:
+            self.first_timestamp = timestamp
+
+        if self.last_timestamp is None or timestamp > self.last_timestamp:
+            self.last_timestamp = timestamp
+
+
 class DatasetPublicationService:
-    """Coordinate validation, storage, verification, and publication."""
+    """Coordinate incremental validation, storage, and publication."""
 
     def __init__(
         self,
@@ -106,6 +166,7 @@ class DatasetPublicationService:
         *,
         schema_version: str = "1",
         storage_format: str = "parquet",
+        max_findings: int = 1_000,
     ) -> None:
         if not isinstance(schema_version, str) or not schema_version.strip():
             raise ValueError("schema_version must be a non-empty string.")
@@ -119,16 +180,23 @@ class DatasetPublicationService:
         self._quote_storage = quote_storage
         self._schema_version = schema_version.strip()
         self._storage_format = storage_format.strip().lower()
+        self._max_findings = max_findings
 
-        self._ohlcv_validator = OHLCVBatchValidator()
-        self._quote_validator = QuoteBatchValidator()
+        self._ohlcv_validator = OHLCVBatchValidator(
+            max_findings=max_findings
+        )
+        self._quote_validator = QuoteBatchValidator(
+            max_findings=max_findings
+        )
 
     async def publish_ohlcv(
         self,
         dataset_id: UUID,
         bars: Iterable[OHLCVBar],
+        *,
+        attempt: IngestionAttempt | None = None,
     ) -> DatasetPublicationResult:
-        """Validate, store, verify, and publish OHLCV observations."""
+        """Incrementally validate, store, verify, and publish OHLCV data."""
 
         dataset = await self._get_dataset(dataset_id)
 
@@ -137,72 +205,62 @@ class DatasetPublicationService:
                 "The requested dataset is not an OHLCV dataset."
             )
 
-        observations = self._materialize(bars, "bars")
-        report = self._ohlcv_validator.validate(observations)
-
-        identity_findings = []
-
-        for index, bar in enumerate(observations):
-            if bar.symbol != dataset.instrument_symbol:
-                identity_findings.append(
-                    QualityFinding(
-                        code="DATASET_SYMBOL_MISMATCH",
-                        severity=FindingSeverity.ERROR,
-                        message=(
-                            f"Observation symbol {bar.symbol} does not match "
-                            f"dataset symbol {dataset.instrument_symbol}."
-                        ),
-                        record_index=index,
-                        field="symbol",
-                        timestamp=bar.timestamp,
-                    )
-                )
-
-            if bar.timeframe != dataset.timeframe:
-                identity_findings.append(
-                    QualityFinding(
-                        code="DATASET_TIMEFRAME_MISMATCH",
-                        severity=FindingSeverity.ERROR,
-                        message=(
-                            f"Observation timeframe {bar.timeframe.value} "
-                            f"does not match dataset timeframe "
-                            f"{dataset.timeframe.value}."
-                        ),
-                        record_index=index,
-                        field="timeframe",
-                        timestamp=bar.timestamp,
-                    )
-                )
-
-        report = self._add_identity_findings(
-            report,
-            identity_findings,
+        first_observation, observations = self._prepare_nonempty_iterator(
+            bars,
+            "bars",
         )
-        report = self._reject_empty_dataset(report, observations)
-
-        if not report.is_valid:
-            raise DatasetPublicationRejectedError(report)
+        self._validate_first_observation_identity(
+            dataset,
+            first_observation,
+        )
 
         version = await self._lifecycle.create_next_staging_version(
             dataset_id,
             schema_version=self._schema_version,
             storage_format=self._storage_format,
+            **({"attempt": attempt} if attempt is not None else {}),
+        )
+
+        try:
+            session = self._ohlcv_validator.start_session()
+        except Exception as operation_error:
+            await self._mark_staging_failed(
+                version, operation_error, attempt=attempt
+            )
+            raise
+
+        statistics = _StreamStatistics()
+        identity_findings = QualityFindingAccumulator(
+            max_findings=self._max_findings
+        )
+
+        streamed_observations = self._stream_ohlcv(
+            observations,
+            dataset,
+            session,
+            statistics,
+            identity_findings,
         )
 
         return await self._write_verify_publish(
             version,
-            observations,
-            report,
+            streamed_observations,
+            session,
+            statistics,
+            identity_findings,
             self._ohlcv_storage,
             "OHLCV",
+            attempt=attempt,
         )
 
     async def publish_quotes(
         self,
         dataset_id: UUID,
         quotes: Iterable[BidAskQuote],
+        *,
+        attempt: IngestionAttempt | None = None,
     ) -> DatasetPublicationResult:
-        """Validate, store, verify, and publish bid/ask observations."""
+        """Incrementally validate, store, verify, and publish quotes."""
 
         dataset = await self._get_dataset(dataset_id)
 
@@ -211,46 +269,105 @@ class DatasetPublicationService:
                 "The requested dataset is not a bid/ask dataset."
             )
 
-        observations = self._materialize(quotes, "quotes")
-        report = self._quote_validator.validate(observations)
-
-        report = self._add_identity_findings(
-            report,
-            (
-                QualityFinding(
-                    code="DATASET_SYMBOL_MISMATCH",
-                    severity=FindingSeverity.ERROR,
-                    message=(
-                        f"Observation symbol {quote.symbol} does not match "
-                        f"dataset symbol {dataset.instrument_symbol}."
-                    ),
-                    record_index=index,
-                    field="symbol",
-                    timestamp=quote.timestamp,
-                )
-                for index, quote in enumerate(observations)
-                if quote.symbol != dataset.instrument_symbol
-            ),
+        first_observation, observations = self._prepare_nonempty_iterator(
+            quotes,
+            "quotes",
         )
-
-        report = self._reject_empty_dataset(report, observations)
-
-        if not report.is_valid:
-            raise DatasetPublicationRejectedError(report)
+        self._validate_first_observation_identity(
+            dataset,
+            first_observation,
+        )
 
         version = await self._lifecycle.create_next_staging_version(
             dataset_id,
             schema_version=self._schema_version,
             storage_format=self._storage_format,
+            **({"attempt": attempt} if attempt is not None else {}),
+        )
+
+        try:
+            session = self._quote_validator.start_session()
+        except Exception as operation_error:
+            await self._mark_staging_failed(
+                version, operation_error, attempt=attempt
+            )
+            raise
+
+        statistics = _StreamStatistics()
+        identity_findings = QualityFindingAccumulator(
+            max_findings=self._max_findings
+        )
+
+        streamed_observations = self._stream_quotes(
+            observations,
+            dataset,
+            session,
+            statistics,
+            identity_findings,
         )
 
         return await self._write_verify_publish(
             version,
-            observations,
-            report,
+            streamed_observations,
+            session,
+            statistics,
+            identity_findings,
             self._quote_storage,
             "bid/ask",
+            attempt=attempt,
         )
+
+    @staticmethod
+    def _validate_first_observation_identity(
+        dataset: Dataset,
+        observation: OHLCVBar | BidAskQuote,
+    ) -> None:
+        """Reject first-record identity mismatches before staging."""
+
+        findings = []
+
+        if observation.symbol != dataset.instrument_symbol:
+            findings.append(
+                QualityFinding(
+                    code="DATASET_SYMBOL_MISMATCH",
+                    severity=FindingSeverity.ERROR,
+                    message=(
+                        f"Observation symbol {observation.symbol} does not "
+                        f"match dataset symbol {dataset.instrument_symbol}."
+                    ),
+                    record_index=0,
+                    field="symbol",
+                    timestamp=observation.timestamp,
+                )
+            )
+
+        if (
+            isinstance(observation, OHLCVBar)
+            and observation.timeframe != dataset.timeframe
+        ):
+            findings.append(
+                QualityFinding(
+                    code="DATASET_TIMEFRAME_MISMATCH",
+                    severity=FindingSeverity.ERROR,
+                    message=(
+                        f"Observation timeframe {observation.timeframe.value} "
+                        f"does not match dataset timeframe "
+                        f"{dataset.timeframe.value}."
+                    ),
+                    record_index=0,
+                    field="timeframe",
+                    timestamp=observation.timestamp,
+                )
+            )
+
+        if findings:
+            raise DatasetPublicationRejectedError(
+                DataQualityReport(
+                    checked_records=1,
+                    findings=tuple(findings),
+                ),
+                rejected_record_count=1,
+            )
 
     async def _get_dataset(self, dataset_id: UUID) -> Dataset:
         if not isinstance(dataset_id, UUID):
@@ -266,63 +383,191 @@ class DatasetPublicationService:
         return dataset
 
     @staticmethod
-    def _materialize(
-        observations: Iterable,
+    def _prepare_nonempty_iterator(
+        observations: Iterable[ObservationT],
         name: str,
-    ) -> tuple:
+    ) -> tuple[ObservationT, Iterator[ObservationT]]:
+        """Peek at the first observation and preserve the complete stream."""
+
         if isinstance(observations, (str, bytes)):
-            raise TypeError(f"{name} must be an iterable of observations.")
+            raise TypeError(
+                f"{name} must be an iterable of observations."
+            )
 
         try:
-            return tuple(observations)
+            iterator = iter(observations)
         except TypeError as exc:
             raise TypeError(
                 f"{name} must be an iterable of observations."
             ) from exc
 
+        try:
+            first_observation = next(iterator)
+        except StopIteration:
+            raise DatasetPublicationRejectedError(
+                DataQualityReport(
+                    checked_records=0,
+                    findings=(
+                        QualityFinding(
+                            code="EMPTY_DATASET",
+                            severity=FindingSeverity.ERROR,
+                            message=(
+                                "A published dataset version must contain "
+                                "records."
+                            ),
+                        ),
+                    ),
+                )
+            ) from None
+
+        def replay_first() -> Iterator[ObservationT]:
+            yield first_observation
+            yield from iterator
+
+        return first_observation, replay_first()
+
+    @staticmethod
+    def _stream_ohlcv(
+        observations: Iterable[OHLCVBar],
+        dataset: Dataset,
+        session: _ValidationSession[OHLCVBar],
+        statistics: _StreamStatistics,
+        identity_findings: QualityFindingAccumulator,
+    ) -> Iterator[OHLCVBar]:
+        """Validate and yield OHLCV observations one at a time."""
+
+        for record_index, bar in enumerate(observations):
+            has_error = session.add(bar)
+            identity_error = False
+
+            if bar.symbol != dataset.instrument_symbol:
+                identity_error = True
+                identity_findings.add(
+                    QualityFinding(
+                        code="DATASET_SYMBOL_MISMATCH",
+                        severity=FindingSeverity.ERROR,
+                        message=(
+                            f"Observation symbol {bar.symbol} does not match "
+                            f"dataset symbol {dataset.instrument_symbol}."
+                        ),
+                        record_index=record_index,
+                        field="symbol",
+                        timestamp=bar.timestamp,
+                    )
+                )
+
+            if bar.timeframe != dataset.timeframe:
+                identity_error = True
+                identity_findings.add(
+                    QualityFinding(
+                        code="DATASET_TIMEFRAME_MISMATCH",
+                        severity=FindingSeverity.ERROR,
+                        message=(
+                            f"Observation timeframe {bar.timeframe.value} "
+                            f"does not match dataset timeframe "
+                            f"{dataset.timeframe.value}."
+                        ),
+                        record_index=record_index,
+                        field="timeframe",
+                        timestamp=bar.timestamp,
+                    )
+                )
+
+            statistics.observe(
+                bar.timestamp,
+                rejected=has_error or identity_error,
+            )
+            yield bar
+
+    @staticmethod
+    def _stream_quotes(
+        observations: Iterable[BidAskQuote],
+        dataset: Dataset,
+        session: _ValidationSession[BidAskQuote],
+        statistics: _StreamStatistics,
+        identity_findings: QualityFindingAccumulator,
+    ) -> Iterator[BidAskQuote]:
+        """Validate and yield quote observations one at a time."""
+
+        for record_index, quote in enumerate(observations):
+            has_error = session.add(quote)
+            identity_error = False
+
+            if quote.symbol != dataset.instrument_symbol:
+                identity_error = True
+                identity_findings.add(
+                    QualityFinding(
+                        code="DATASET_SYMBOL_MISMATCH",
+                        severity=FindingSeverity.ERROR,
+                        message=(
+                            f"Observation symbol {quote.symbol} does not match "
+                            f"dataset symbol {dataset.instrument_symbol}."
+                        ),
+                        record_index=record_index,
+                        field="symbol",
+                        timestamp=quote.timestamp,
+                    )
+                )
+
+            statistics.observe(
+                quote.timestamp,
+                rejected=has_error or identity_error,
+            )
+            yield quote
+
     @staticmethod
     def _add_identity_findings(
         report: DataQualityReport,
-        findings: Iterable[QualityFinding],
+        findings: QualityFindingAccumulator,
+        *,
+        max_findings: int,
     ) -> DataQualityReport:
-        additional_findings = tuple(findings)
-
-        if not additional_findings:
-            return report
-
-        return DataQualityReport(
-            checked_records=report.checked_records,
-            findings=report.findings + additional_findings,
+        combined = QualityFindingAccumulator(
+            max_findings=max_findings
+        )
+        combined.merge_report(report)
+        combined.merge_report(
+            findings.build_report(
+                checked_records=report.checked_records
+            )
+        )
+        return combined.build_report(
+            checked_records=report.checked_records
         )
 
-    @staticmethod
-    def _reject_empty_dataset(
-        report: DataQualityReport,
-        observations: tuple,
-    ) -> DataQualityReport:
-        if observations:
-            return report
+    async def _mark_staging_failed(
+        self,
+        version: DatasetVersion,
+        operation_error: Exception,
+        *,
+        attempt: IngestionAttempt | None = None,
+    ) -> None:
+        """Mark a staging version FAILED without hiding the original error."""
 
-        return DatasetPublicationService._add_identity_findings(
-            report,
-            (
-                QualityFinding(
-                    code="EMPTY_DATASET",
-                    severity=FindingSeverity.ERROR,
-                    message="A published dataset version must contain records.",
-                ),
-            ),
-        )
+        try:
+            await self._lifecycle.fail_staging_version(
+                version.dataset_version_id,
+                **({"attempt": attempt} if attempt is not None else {}),
+            )
+        except Exception as failure_error:
+            operation_error.add_note(
+                "Additionally, the staging version could not be "
+                f"marked FAILED: {failure_error!r}"
+            )
 
     async def _write_verify_publish(
         self,
         version: DatasetVersion,
-        observations: tuple,
-        report: DataQualityReport,
+        observations: Iterable[ObservationT],
+        session: _ValidationSession[ObservationT],
+        statistics: _StreamStatistics,
+        identity_findings: QualityFindingAccumulator,
         storage: VerifiableOHLCVStorage | VerifiableQuoteStorage,
         description: str,
+        *,
+        attempt: IngestionAttempt | None = None,
     ) -> DatasetPublicationResult:
-        """Perform the storage and publication portion of the workflow."""
+        """Stream, validate, verify, and publish one dataset version."""
 
         try:
             metadata = await storage.write(
@@ -330,9 +575,25 @@ class DatasetPublicationService:
                 observations,
             )
 
+            report = session.finish()
+
+            report = self._add_identity_findings(
+                report,
+                identity_findings,
+                max_findings=self._max_findings,
+            )
+
+            if not report.is_valid:
+                raise DatasetPublicationRejectedError(
+                    report,
+                    rejected_record_count=(
+                        statistics.rejected_record_count
+                    ),
+                )
+
             self._validate_written_metadata(
                 metadata,
-                observations,
+                statistics,
                 description,
                 version.storage_format,
             )
@@ -345,6 +606,7 @@ class DatasetPublicationService:
             published_version = await self._lifecycle.publish_staging_version(
                 version.dataset_version_id,
                 metadata,
+                **({"attempt": attempt} if attempt is not None else {}),
             )
 
             return DatasetPublicationResult(
@@ -353,25 +615,23 @@ class DatasetPublicationService:
             )
 
         except Exception as operation_error:
-            try:
-                await self._lifecycle.fail_staging_version(
-                    version.dataset_version_id
-                )
-            except Exception as failure_error:
-                operation_error.add_note(
-                    "Additionally, the staging version could not be "
-                    f"marked FAILED: {failure_error!r}"
-                )
-
+            await self._mark_staging_failed(
+                version, operation_error, attempt=attempt
+            )
             raise
+
+        finally:
+            session.close()
 
     @staticmethod
     def _validate_written_metadata(
         metadata: StorageObjectMetadata,
-        observations: tuple,
+        statistics: _StreamStatistics,
         description: str,
         expected_storage_format: str,
     ) -> None:
+        """Compare stored metadata with streaming input statistics."""
+
         if not isinstance(metadata, StorageObjectMetadata):
             raise DatasetPublicationStorageError(
                 f"{description} storage returned invalid metadata."
@@ -383,23 +643,15 @@ class DatasetPublicationService:
                 "allocated dataset version."
             )
 
-        timestamps = tuple(
-            observation.timestamp
-            for observation in observations
-        )
-
-        expected_first = min(timestamps)
-        expected_last = max(timestamps)
-
-        if metadata.record_count != len(observations):
+        if metadata.record_count != statistics.record_count:
             raise DatasetPublicationStorageError(
                 f"{description} storage record count does not match "
                 "the submitted observations."
             )
 
         if (
-            metadata.first_timestamp != expected_first
-            or metadata.last_timestamp != expected_last
+            metadata.first_timestamp != statistics.first_timestamp
+            or metadata.last_timestamp != statistics.last_timestamp
         ):
             raise DatasetPublicationStorageError(
                 f"{description} storage timestamp boundaries do not "

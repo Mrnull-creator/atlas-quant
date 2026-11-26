@@ -99,6 +99,12 @@ class IngestionJobRepositoryIntegrityError(IngestionJobRepositoryError):
     """Raised when ingestion job persistence violates a database constraint."""
 
 
+class IngestionJobRepositoryExecutionOwnershipError(
+    IngestionJobRepositoryError
+):
+    """Raised when a worker no longer owns the current ingestion attempt."""
+
+
 class DatasetVersionLineageRepositoryError(Exception):
     """Base exception for dataset-version lineage repository operations."""
 

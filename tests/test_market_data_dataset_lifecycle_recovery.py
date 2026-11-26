@@ -33,6 +33,8 @@ class FakeResult:
     def scalar_one_or_none(self):
         return self.value
 
+    def one_or_none(self):
+        return self.value
     def scalars(self):
         return self
 
@@ -136,7 +138,7 @@ def test_fail_staging_version_changes_status_to_failed():
 
     repository, session, _ = make_repository(
         [
-            FakeResult(dataset_id),
+            FakeResult((dataset_id, None)),
             FakeResult(dataset),
             FakeResult(version),
         ]
@@ -166,7 +168,7 @@ def test_fail_staging_version_does_not_change_latest_pointer():
 
     repository, _, _ = make_repository(
         [
-            FakeResult(dataset_id),
+            FakeResult((dataset_id, None)),
             FakeResult(dataset),
             FakeResult(version),
         ]
@@ -191,7 +193,7 @@ def test_fail_staging_version_rejects_non_staging_version():
 
     repository, session, _ = make_repository(
         [
-            FakeResult(dataset_id),
+            FakeResult((dataset_id, None)),
             FakeResult(dataset),
             FakeResult(version),
         ]
@@ -222,7 +224,7 @@ def test_fail_staging_version_rejects_missing_dataset():
 
     repository, _, _ = make_repository(
         [
-            FakeResult(dataset_id),
+            FakeResult((dataset_id, None)),
             FakeResult(None),
         ]
     )

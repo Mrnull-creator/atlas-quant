@@ -138,6 +138,7 @@ class DukascopyProviderAdapter:
             payload=BytesIO(result.payload),
             content_type="application/octet-stream",
             provider_schema_version=DUKASCOPY_BI5_SCHEMA_VERSION,
+            storage_format="bi5",
             downloaded_at=result.downloaded_at,
         )
 

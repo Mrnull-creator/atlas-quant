@@ -1,3 +1,6 @@
+"""Auditable next-bar-open execution simulator using bid/ask prices."""
+
+import numbers
 
 import numpy as np
 import pandas as pd
@@ -11,22 +14,23 @@ def simulate_next_open(
     slippage_pips: float = 0.0,
     pip_size: float = 0.0001,
 ) -> pd.DataFrame:
-    """Simulate fixed-size EUR/USD positions at next-candle open.
+    """Simulate fixed-size positions at the next available bar open.
 
     Required columns:
         bid_open, ask_open, bid_close, ask_close, position
 
-    Position at row t is assumed to have been determined using
-    information available by the close of row t-1.
+    ``position`` is the target exposure effective at that row's open.
+    The first row is excluded because its target may have been generated
+    before the supplied dataset begins.
 
-    Orders execute at row t's opening bid/ask, with optional
-    adverse slippage. Commission is charged on each traded unit
-    per side. Open positions are marked to the executable
-    closing side of the market.
+    Buys execute at ask and sells at bid. Slippage is applied adversely.
+    Open positions are marked at the executable closing side.
 
-    This simplified spot-style simulation excludes financing,
-    margin, and broker constraints. Spread is accounted for
-    through bid/ask prices and is not charged separately.
+    Spread is included in bid/ask prices and is never charged separately.
+    Commission is charged per 1,000 units traded, per side.
+
+    This simplified spot-style simulation excludes financing, margin,
+    leverage constraints, broker rules, and partial fills.
     """
     required = {
         "bid_open",
@@ -45,11 +49,49 @@ def simulate_next_open(
     if data.empty:
         raise ValueError("Data cannot be empty")
 
+    if not isinstance(data.index, pd.DatetimeIndex):
+        raise TypeError("Data index must be a DatetimeIndex")
+
+    if data.index.tz is None:
+        raise ValueError("Bar timestamps must be timezone-aware")
+
+    if data.index.hasnans:
+        raise ValueError("Bar timestamps cannot be missing")
+
     if not data.index.is_monotonic_increasing:
         raise ValueError("Data must be chronological")
 
     if data.index.has_duplicates:
         raise ValueError("Duplicate timestamps are not allowed")
+
+    numeric_settings = {
+        "initial_cash": initial_cash,
+        "units": units,
+        "commission_per_1000_units_per_side_usd":
+            commission_per_1000_units_per_side_usd,
+        "slippage_pips": slippage_pips,
+        "pip_size": pip_size,
+    }
+
+    for name, value in numeric_settings.items():
+        if (
+            isinstance(value, bool)
+            or not isinstance(value, numbers.Real)
+            or not np.isfinite(value)
+        ):
+            raise ValueError(f"{name} must be a finite number")
+
+    if initial_cash <= 0 or units <= 0:
+        raise ValueError("Initial cash and units must be positive")
+
+    if commission_per_1000_units_per_side_usd < 0:
+        raise ValueError("Commission cannot be negative")
+
+    if slippage_pips < 0:
+        raise ValueError("Slippage cannot be negative")
+
+    if pip_size <= 0:
+        raise ValueError("Pip size must be positive")
 
     result = data.copy()
 
@@ -72,16 +114,16 @@ def simulate_next_open(
                 f"{column} must contain finite values"
             )
 
-    for column in [
+    price_columns = [
         "bid_open",
         "ask_open",
         "bid_close",
         "ask_close",
-    ]:
+    ]
+
+    for column in price_columns:
         if (result[column] <= 0).any():
-            raise ValueError(
-                f"{column} prices must be positive"
-            )
+            raise ValueError(f"{column} prices must be positive")
 
     if (result["ask_open"] < result["bid_open"]).any():
         raise ValueError("Ask open cannot be below bid open")
@@ -92,78 +134,53 @@ def simulate_next_open(
     if not result["position"].isin([-1, 0, 1]).all():
         raise ValueError("Positions must be -1, 0, or 1")
 
-    numeric_settings = {
-        "initial_cash": initial_cash,
-        "units": units,
-        "commission_per_1000_units_per_side_usd":
-            commission_per_1000_units_per_side_usd,
-        "slippage_pips": slippage_pips,
-        "pip_size": pip_size,
-    }
-
-    for name, value in numeric_settings.items():
-        if not np.isscalar(value) or not np.isfinite(value):
-            raise ValueError(f"{name} must be finite")
-
-    if initial_cash <= 0 or units <= 0:
-        raise ValueError(
-            "Initial cash and units must be positive"
-        )
-
-    if commission_per_1000_units_per_side_usd < 0:
-        raise ValueError("Commission cannot be negative")
-
-    if slippage_pips < 0:
-        raise ValueError("Slippage cannot be negative")
-
-    if pip_size <= 0:
-        raise ValueError("Pip size must be positive")
-
-    slippage_price = slippage_pips * pip_size
-
-    # The first row's position was determined before this dataset
-    # begins, so exclude it to avoid assuming an earlier signal.
+    # The first target may have been generated before this dataset.
+    # Only targets with a preceding in-dataset completed bar are used.
     result = result.iloc[1:].copy()
 
     if result.empty:
-        raise ValueError(
-            "At least two observations are required"
-        )
+        raise ValueError("At least two observations are required")
 
     cash = float(initial_cash)
     current_units = 0.0
+    slippage_price = float(slippage_pips * pip_size)
     records = []
 
     for timestamp, row in result.iterrows():
-        target_units = int(row["position"]) * units
+        target_units = int(row["position"]) * float(units)
+        delta_units = target_units - current_units
 
         bid_open = float(row["bid_open"])
         ask_open = float(row["ask_open"])
         bid_close = float(row["bid_close"])
         ask_close = float(row["ask_close"])
 
-        delta_units = target_units - current_units
+        traded_units = abs(delta_units)
+        execution_price = None
+        execution_side = None
+        slippage_cost = 0.0
 
-        # Apply adverse slippage to the execution price.
         if delta_units > 0:
+            execution_side = "buy"
             execution_price = ask_open + slippage_price
-            cash -= delta_units * execution_price
-        elif delta_units < 0:
-            execution_price = bid_open - slippage_price
-            cash += (-delta_units) * execution_price
+            slippage_cost = traded_units * slippage_price
+            cash -= traded_units * execution_price
 
-        # Charge commission on every unit traded, including
-        # both the closing and opening legs of a reversal.
+        elif delta_units < 0:
+            execution_side = "sell"
+            execution_price = bid_open - slippage_price
+            slippage_cost = traded_units * slippage_price
+            cash += traded_units * execution_price
+
         commission = (
-            abs(delta_units)
+            traded_units
             / 1_000.0
-            * commission_per_1000_units_per_side_usd
+            * float(commission_per_1000_units_per_side_usd)
         )
         cash -= commission
 
         current_units = target_units
 
-        # Mark the open position at its executable close-side price.
         if current_units > 0:
             liquidation_value = current_units * bid_close
         elif current_units < 0:
@@ -179,11 +196,15 @@ def simulate_next_open(
                 "position": int(row["position"]),
                 "cash": cash,
                 "units": current_units,
+                "traded_units": traded_units,
+                "execution_side": execution_side,
+                "execution_price": execution_price,
+                "slippage_cost": slippage_cost,
+                "commission": commission,
                 "bid_open": bid_open,
                 "ask_open": ask_open,
                 "bid_close": bid_close,
                 "ask_close": ask_close,
-                "commission": commission,
                 "equity": equity,
             }
         )
@@ -191,14 +212,11 @@ def simulate_next_open(
     output = pd.DataFrame(records).set_index("time")
 
     previous_equity = output["equity"].shift(1)
-    output["return"] = (
-        output["equity"] / previous_equity - 1
-    )
+    output["return"] = output["equity"] / previous_equity - 1
     output.iloc[0, output.columns.get_loc("return")] = (
         output["equity"].iloc[0] / initial_cash - 1
     )
 
-    # Include initial cash as a potential equity peak.
     output["peak_equity"] = (
         output["equity"].cummax().clip(lower=initial_cash)
     )

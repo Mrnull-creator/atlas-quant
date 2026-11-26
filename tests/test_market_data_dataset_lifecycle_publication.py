@@ -42,6 +42,18 @@ class FakeResult:
     def scalar_one(self):
         return self.value
 
+    def one_or_none(self):
+        if self.value is None:
+            return None
+
+        if isinstance(self.value, tuple):
+            return self.value
+
+        # Publication identity queries select (dataset_id,
+        # ingestion_attempt_id). Existing standalone-version fixtures
+        # provide only dataset_id, so represent their attempt ID as None.
+        return (self.value, None)
+
 
 class FakeTransaction:
     async def __aenter__(self):
@@ -377,7 +389,7 @@ async def test_publish_rejects_missing_observation_count_for_normalized_dataset(
     dataset = make_dataset(data_kind=DatasetKind.OHLCV)
     metadata = make_metadata(record_count=None)
 
-    session = FakeSession([dataset.dataset_id, dataset])
+    session = FakeSession([dataset.dataset_id, dataset, make_version(dataset.dataset_id)])
     factory = FakeSessionFactory(session)
     repository = SQLAlchemyDatasetLifecycleRepository(factory)
 

@@ -221,17 +221,19 @@ class FakeStorage:
         self.verify_calls = []
 
     async def write(self, dataset_version_id, observations):
+        materialized = tuple(observations)
+
         self.write_calls.append(
-            (dataset_version_id, tuple(observations))
+            (dataset_version_id, materialized)
         )
 
         if self.write_error is not None:
             raise self.write_error
 
         if self.metadata_factory is not None:
-            return self.metadata_factory(observations)
+            return self.metadata_factory(materialized)
 
-        return make_metadata(observations)
+        return make_metadata(materialized)
 
     async def verify(self, dataset_version_id, expected):
         self.verify_calls.append((dataset_version_id, expected))
@@ -249,6 +251,7 @@ def make_service(
     version=None,
     ohlcv_storage=None,
     quote_storage=None,
+    max_findings=1_000,
 ):
     datasets = FakeDatasetRepository(dataset)
     lifecycle = FakeLifecycleRepository(dataset, version)
@@ -261,6 +264,7 @@ def make_service(
         lifecycle,
         ohlcv,
         quotes,
+        max_findings=max_findings,
     )
 
     return service, datasets, lifecycle, ohlcv, quotes
@@ -578,3 +582,122 @@ async def test_missing_dataset_is_rejected():
     assert "does not exist" in str(captured.value)
     assert lifecycle.created_versions == []
     assert storage.write_calls == []
+
+@async_test
+async def test_ohlcv_validator_session_failure_marks_staging_failed():
+    dataset = make_dataset()
+    service, _, lifecycle, storage, _ = make_service(dataset)
+
+    def fail_start_session():
+        raise RuntimeError("OHLCV validator initialization failed")
+
+    service._ohlcv_validator.start_session = fail_start_session
+
+    with pytest.raises(
+        RuntimeError,
+        match="OHLCV validator initialization failed",
+    ):
+        await service.publish_ohlcv(
+            dataset.dataset_id,
+            [make_bar()],
+        )
+
+    assert len(lifecycle.created_versions) == 1
+    assert len(lifecycle.failed_versions) == 1
+    assert storage.write_calls == []
+    assert lifecycle.published_versions == []
+
+
+@async_test
+async def test_quote_validator_session_failure_marks_staging_failed():
+    dataset = make_dataset(DatasetKind.BID_ASK)
+    service, _, lifecycle, _, storage = make_service(dataset)
+
+    def fail_start_session():
+        raise RuntimeError("Quote validator initialization failed")
+
+    service._quote_validator.start_session = fail_start_session
+
+    with pytest.raises(
+        RuntimeError,
+        match="Quote validator initialization failed",
+    ):
+        await service.publish_quotes(
+            dataset.dataset_id,
+            [make_quote()],
+        )
+
+    assert len(lifecycle.created_versions) == 1
+    assert len(lifecycle.failed_versions) == 1
+    assert storage.write_calls == []
+    assert lifecycle.published_versions == []
+
+
+@async_test
+async def test_ohlcv_publication_bounds_combined_quality_findings():
+    dataset = make_dataset()
+    service, _, lifecycle, storage, _ = make_service(
+        dataset,
+        max_findings=2,
+    )
+
+    bars = [
+        make_bar(minute=0, symbol="EURUSD"),
+        make_bar(minute=2, symbol="GBPUSD"),
+        make_bar(minute=1, symbol="GBPUSD"),
+        make_bar(minute=1, symbol="GBPUSD"),
+    ]
+
+    with pytest.raises(DatasetPublicationRejectedError) as captured:
+        await service.publish_ohlcv(dataset.dataset_id, bars)
+
+    report = captured.value.report
+
+    assert report.error_count == 4
+    assert report.warning_count == 1
+    assert report.warning_count == 1
+    assert report.total_findings == 5
+    assert report.retained_finding_count == 2
+    assert report.findings_truncated is True
+    assert len(lifecycle.created_versions) == 1
+    assert len(lifecycle.failed_versions) == 1
+    assert len(storage.write_calls) == 1
+    assert lifecycle.published_versions == []
+
+
+@async_test
+async def test_quote_publication_bounds_combined_quality_findings():
+    dataset = make_dataset(DatasetKind.BID_ASK)
+    service, _, lifecycle, _, storage = make_service(
+        dataset,
+        max_findings=2,
+    )
+
+    crossed_quotes = [
+        BidAskQuote(
+            symbol="EURUSD" if index == 0 else "GBPUSD",
+            timestamp=BASE_TIMESTAMP,
+            bid=Decimal("1.1002"),
+            ask=Decimal("1.1000"),
+            bid_size=Decimal("100"),
+            ask_size=Decimal("150"),
+        )
+        for index in range(4)
+    ]
+
+    with pytest.raises(DatasetPublicationRejectedError) as captured:
+        await service.publish_quotes(
+            dataset.dataset_id,
+            crossed_quotes,
+        )
+
+    report = captured.value.report
+
+    assert report.error_count == 9
+    assert report.total_findings == 9
+    assert report.retained_finding_count == 2
+    assert report.findings_truncated is True
+    assert len(lifecycle.created_versions) == 1
+    assert len(lifecycle.failed_versions) == 1
+    assert len(storage.write_calls) == 1
+    assert lifecycle.published_versions == []

@@ -1,118 +1,163 @@
+"""Incremental validation for historical OHLCV market data."""
 
-"""Batch validation for historical OHLCV market data."""
-
+import json
 from collections.abc import Iterable
-from datetime import datetime
 
+from atlas_quant.services.market_data.application.incremental_validation import (
+    IncrementalTimestampIndex,
+)
 from atlas_quant.services.market_data.domain.bars import OHLCVBar
 from atlas_quant.services.market_data.domain.quality import (
     DataQualityReport,
     FindingSeverity,
     QualityFinding,
+    QualityFindingAccumulator,
 )
-from atlas_quant.services.market_data.domain.enums import Timeframe
 
 
 class OHLCVBatchValidator:
-    """Validate consistency across a batch of OHLCV observations."""
+    """Validate consistency across OHLCV observations."""
+
+    def __init__(self, *, max_findings: int = 1_000) -> None:
+        self._max_findings = max_findings
+
+    def start_session(self) -> "_OHLCVValidationSession":
+        """Start an incremental validation session."""
+        return _OHLCVValidationSession(
+            max_findings=self._max_findings
+        )
 
     def validate(
         self,
         bars: Iterable[OHLCVBar],
     ) -> DataQualityReport:
-        """Detect duplicate and out-of-order observations.
-
-        Observations are never sorted, modified, or discarded.
-
-        Record indexes refer to the original input order.
-        Validation is performed independently for each
-        instrument and timeframe.
-        """
+        """Validate an iterable without materializing its observations."""
 
         if isinstance(bars, (str, bytes)):
             raise TypeError("bars must contain OHLCVBar objects.")
 
         try:
-            observations = tuple(bars)
+            observations = iter(bars)
         except TypeError as exc:
             raise TypeError(
                 "bars must be an iterable of OHLCVBar objects."
             ) from exc
 
-        for bar in observations:
-            if not isinstance(bar, OHLCVBar):
-                raise TypeError(
-                    "Every observation must be an OHLCVBar."
-                )
+        with self.start_session() as session:
+            for bar in observations:
+                session.add(bar)
 
-        findings: list[QualityFinding] = []
+            return session.finish()
 
-        seen_timestamps: dict[
-            tuple[str, Timeframe],
-            set[datetime],
-        ] = {}
 
-        latest_timestamps: dict[
-            tuple[str, Timeframe],
-            datetime,
-        ] = {}
+class _OHLCVValidationSession:
+    """Incrementally validate OHLCV observations."""
 
-        for record_index, bar in enumerate(observations):
-            series_key = (bar.symbol, bar.timeframe)
+    def __init__(self, *, max_findings: int = 1_000) -> None:
+        self._timestamp_index = IncrementalTimestampIndex()
 
-            timestamps = seen_timestamps.setdefault(
-                series_key,
-                set(),
+        try:
+            self._findings = QualityFindingAccumulator(
+                max_findings=max_findings
+            )
+        except BaseException:
+            self._timestamp_index.close()
+            raise
+        self._checked_records = 0
+        self._closed = False
+
+    def add(self, bar: OHLCVBar) -> bool:
+        """Validate one observation and return whether it has an error."""
+
+        self._ensure_open()
+
+        if not isinstance(bar, OHLCVBar):
+            raise TypeError(
+                "Every observation must be an OHLCVBar."
             )
 
-            if bar.timestamp in timestamps:
-                findings.append(
-                    QualityFinding(
-                        code="DUPLICATE_BAR_TIMESTAMP",
-                        severity=FindingSeverity.ERROR,
-                        message=(
-                            f"Duplicate bar timestamp for "
-                            f"{bar.symbol} at {bar.timestamp.isoformat()}."
-                        ),
-                        record_index=record_index,
-                        field="timestamp",
-                        timestamp=bar.timestamp,
-                    )
-                )
+        record_index = self._checked_records
+        self._checked_records += 1
 
-                # A duplicate already has a specific error.
-                # Avoid reporting a second ordering warning.
-                continue
-
-            timestamps.add(bar.timestamp)
-
-            latest_timestamp = latest_timestamps.get(series_key)
-
-            if (
-                latest_timestamp is not None
-                and bar.timestamp < latest_timestamp
-            ):
-                findings.append(
-                    QualityFinding(
-                        code="OUT_OF_ORDER_BAR",
-                        severity=FindingSeverity.WARNING,
-                        message=(
-                            f"Bar timestamp for {bar.symbol} is earlier "
-                            f"than a previously observed timestamp."
-                        ),
-                        record_index=record_index,
-                        field="timestamp",
-                        timestamp=bar.timestamp,
-                    )
-                )
-
-            if (
-                latest_timestamp is None
-                or bar.timestamp > latest_timestamp
-            ):
-                latest_timestamps[series_key] = bar.timestamp
-
-        return DataQualityReport(
-            checked_records=len(observations),
-            findings=tuple(findings),
+        series_key = json.dumps(
+            (bar.symbol, bar.timeframe.value),
+            ensure_ascii=False,
+            separators=(",", ":"),
         )
+
+        timestamp_check = self._timestamp_index.observe(
+            series_key,
+            bar.timestamp,
+        )
+
+        if timestamp_check.is_duplicate:
+            self._findings.add(
+                QualityFinding(
+                    code="DUPLICATE_BAR_TIMESTAMP",
+                    severity=FindingSeverity.ERROR,
+                    message=(
+                        f"Duplicate bar timestamp for "
+                        f"{bar.symbol} at {bar.timestamp.isoformat()}."
+                    ),
+                    record_index=record_index,
+                    field="timestamp",
+                    timestamp=bar.timestamp,
+                )
+            )
+            return True
+
+        if timestamp_check.is_out_of_order:
+            self._findings.add(
+                QualityFinding(
+                    code="OUT_OF_ORDER_BAR",
+                    severity=FindingSeverity.WARNING,
+                    message=(
+                        f"Bar timestamp for {bar.symbol} is earlier "
+                        f"than a previously observed timestamp."
+                    ),
+                    record_index=record_index,
+                    field="timestamp",
+                    timestamp=bar.timestamp,
+                )
+            )
+
+        return False
+
+    def finish(self) -> DataQualityReport:
+        """Complete validation and return the quality report."""
+
+        self._ensure_open()
+
+        report = self._findings.build_report(
+            checked_records=self._checked_records
+        )
+
+        self.close()
+        return report
+
+    def close(self) -> None:
+        """Release temporary validation storage."""
+
+        if self._closed:
+            return
+
+        self._closed = True
+        self._timestamp_index.close()
+
+    def _ensure_open(self) -> None:
+        if self._closed:
+            raise RuntimeError(
+                "The OHLCV validation session is closed."
+            )
+
+    def __enter__(self) -> "_OHLCVValidationSession":
+        self._ensure_open()
+        return self
+
+    def __exit__(
+        self,
+        exception_type,
+        exception,
+        traceback,
+    ) -> None:
+        self.close()

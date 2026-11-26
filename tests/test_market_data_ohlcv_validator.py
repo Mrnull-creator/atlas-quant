@@ -275,3 +275,39 @@ def test_validation_does_not_modify_input_order(
         bar.timestamp
         for bar in bars
     ] == original_order
+def test_finding_details_are_bounded_but_aggregate_counts_are_preserved(
+    timestamps,
+):
+    validator = OHLCVBatchValidator(max_findings=1)
+
+    bars = [
+        make_bar(timestamps[0]),
+        make_bar(timestamps[3]),
+        make_bar(timestamps[1]),
+        make_bar(timestamps[1]),
+        make_bar(timestamps[2]),
+    ]
+
+    report = validator.validate(bars)
+
+    assert report.checked_records == 5
+    assert len(report.findings) == 1
+    assert report.retained_finding_count == 1
+    assert report.total_findings == 3
+    assert report.error_count == 1
+    assert report.warning_count == 2
+    assert report.info_count == 0
+    assert report.findings_truncated is True
+    assert report.is_valid is False
+    assert report.has_warnings is True
+
+
+def test_session_add_returns_error_status(timestamps):
+    session = OHLCVBatchValidator().start_session()
+
+    try:
+        assert session.add(make_bar(timestamps[0])) is False
+        assert session.add(make_bar(timestamps[0])) is True
+        assert session.add(make_bar(timestamps[2])) is False
+    finally:
+        session.close()

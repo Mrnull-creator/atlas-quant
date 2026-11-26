@@ -1,5 +1,6 @@
 """Contracts for external market data provider adapters."""
 
+import re
 from collections.abc import Iterator
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -16,6 +17,9 @@ from atlas_quant.services.market_data.domain.providers import (
     MarketDataProvider,
 )
 from atlas_quant.services.market_data.domain.quotes import BidAskQuote
+
+
+_STORAGE_FORMAT_PATTERN = re.compile(r"[a-z0-9][a-z0-9_-]{0,31}")
 
 
 @dataclass(frozen=True, slots=True)
@@ -42,17 +46,12 @@ class ProviderDataRequest:
             raise TypeError("instrument must be an Instrument.")
 
         if not isinstance(self.mapping, ProviderInstrumentMapping):
-            raise TypeError(
-                "mapping must be a ProviderInstrumentMapping."
-            )
+            raise TypeError("mapping must be a ProviderInstrumentMapping.")
 
         if not isinstance(self.data_kind, DatasetKind):
             raise TypeError("data_kind must be a DatasetKind value.")
 
-        if self.data_kind not in (
-            DatasetKind.OHLCV,
-            DatasetKind.BID_ASK,
-        ):
+        if self.data_kind not in (DatasetKind.OHLCV, DatasetKind.BID_ASK):
             raise ValueError(
                 "Provider requests must contain OHLCV or BID_ASK data."
             )
@@ -76,10 +75,7 @@ class ProviderDataRequest:
                 "The provider mapping belongs to a different instrument."
             )
 
-        if (
-            self.instrument.asset_class
-            not in self.provider.supported_asset_classes
-        ):
+        if self.instrument.asset_class not in self.provider.supported_asset_classes:
             raise ValueError(
                 "The provider does not support this instrument's asset class."
             )
@@ -91,15 +87,12 @@ class ProviderDataRequest:
                 )
 
             if not isinstance(self.timeframe, Timeframe):
-                raise TypeError(
-                    "OHLCV requests require a Timeframe value."
-                )
+                raise TypeError("OHLCV requests require a Timeframe value.")
 
             if self.timeframe not in self.provider.supported_timeframes:
                 raise ValueError(
                     "The provider does not support the requested timeframe."
                 )
-
         else:
             if not self.provider.supports_quote_data:
                 raise ValueError(
@@ -118,21 +111,14 @@ class ProviderDataRequest:
             raise ValueError("Request start must be before request end.")
 
         object.__setattr__(
-            self,
-            "start",
-            self.start.astimezone(timezone.utc),
+            self, "start", self.start.astimezone(timezone.utc)
         )
         object.__setattr__(
-            self,
-            "end",
-            self.end.astimezone(timezone.utc),
+            self, "end", self.end.astimezone(timezone.utc)
         )
 
     @staticmethod
-    def _normalize_timestamp(
-        field_name: str,
-        value: datetime,
-    ) -> None:
+    def _normalize_timestamp(field_name: str, value: datetime) -> None:
         if not isinstance(value, datetime):
             raise TypeError(f"{field_name} must be a datetime.")
 
@@ -156,6 +142,7 @@ class ProviderDownload:
     payload: BinaryIO
     content_type: str = "application/octet-stream"
     provider_schema_version: str | None = None
+    storage_format: str = "provider-native"
     downloaded_at: datetime = field(
         default_factory=lambda: datetime.now(timezone.utc)
     )
@@ -208,10 +195,18 @@ class ProviderDownload:
                 )
 
             object.__setattr__(
-                self,
-                "provider_schema_version",
-                schema_version,
+                self, "provider_schema_version", schema_version
             )
+
+        if not isinstance(self.storage_format, str):
+            raise TypeError("storage_format must be a string.")
+
+        storage_format = self.storage_format.strip().lower()
+
+        if not _STORAGE_FORMAT_PATTERN.fullmatch(storage_format):
+            raise ValueError("storage_format has an invalid format.")
+
+        object.__setattr__(self, "storage_format", storage_format)
 
         if not isinstance(self.downloaded_at, datetime):
             raise TypeError("downloaded_at must be a datetime.")
@@ -274,9 +269,6 @@ class ProviderAdapter(Protocol):
 class ProviderAdapterRegistry(Protocol):
     """Resolve an adapter for a registered provider."""
 
-    def get_adapter(
-        self,
-        provider_id: str,
-    ) -> ProviderAdapter:
+    def get_adapter(self, provider_id: str) -> ProviderAdapter:
         """Return the adapter registered for the provider identifier."""
         ...

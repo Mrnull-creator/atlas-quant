@@ -1,3 +1,4 @@
+
 """SQLAlchemy persistence mapping for immutable dataset versions."""
 
 from datetime import datetime, timezone
@@ -22,7 +23,9 @@ from atlas_quant.services.market_data.domain.datasets import (
 from atlas_quant.services.market_data.infrastructure.persistence.base import (
     MarketDataBase,
 )
-
+from atlas_quant.services.market_data.infrastructure.persistence.ingestion_attempt import (
+    IngestionAttemptORM as _IngestionAttemptORM,
+)
 
 class DatasetVersionORM(MarketDataBase):
     """Database representation of an immutable dataset snapshot."""
@@ -98,10 +101,30 @@ class DatasetVersionORM(MarketDataBase):
                 AND checksum_algorithm IS NOT NULL
                 AND checksum IS NOT NULL
                 AND published_at IS NOT NULL
+                AND (
+                    verified_at IS NULL
+                    OR verified_at <= published_at
+                )
+            )
+            OR
+            (
+                status = 'verified'
+                AND (record_count IS NULL OR record_count > 0)
+                AND storage_uri IS NOT NULL
+                AND checksum_algorithm IS NOT NULL
+                AND checksum IS NOT NULL
+                AND verified_at IS NOT NULL
+                AND published_at IS NULL
+            )
+            OR
+            (
+                status = 'abandoned'
+                AND published_at IS NULL
             )
             OR
             (
                 status IN ('staging', 'failed')
+                AND verified_at IS NULL
                 AND published_at IS NULL
             )
             """,
@@ -110,6 +133,10 @@ class DatasetVersionORM(MarketDataBase):
         CheckConstraint(
             "published_at IS NULL OR published_at >= created_at",
             name="publication_after_creation",
+        ),
+        CheckConstraint(
+            "verified_at IS NULL OR verified_at >= created_at",
+            name="verification_after_creation",
         ),
     )
 
@@ -204,5 +231,19 @@ class DatasetVersionORM(MarketDataBase):
 
     published_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True),
+        nullable=True,
+    )
+
+    verified_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+
+    ingestion_attempt_id: Mapped[UUID | None] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey(
+            "ingestion_attempts.attempt_id",
+            ondelete="RESTRICT",
+        ),
         nullable=True,
     )

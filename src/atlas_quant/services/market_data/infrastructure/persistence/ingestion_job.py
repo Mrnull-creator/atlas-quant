@@ -1,4 +1,5 @@
-﻿"""SQLAlchemy persistence mappings for market data ingestion jobs."""
+﻿
+"""SQLAlchemy persistence mappings for market data ingestion jobs."""
 
 from datetime import datetime, timezone
 from uuid import UUID, uuid4
@@ -9,6 +10,7 @@ from sqlalchemy import (
     DateTime,
     Enum,
     ForeignKey,
+    ForeignKeyConstraint,
     String,
     Uuid,
 )
@@ -25,7 +27,9 @@ from atlas_quant.services.market_data.domain.ingestion import (
 from atlas_quant.services.market_data.infrastructure.persistence.base import (
     MarketDataBase,
 )
-
+from atlas_quant.services.market_data.infrastructure.persistence.ingestion_attempt import (
+    IngestionAttemptORM as _IngestionAttemptORM,
+)
 
 class IngestionJobORM(MarketDataBase):
     """Database representation of an ingestion job."""
@@ -33,6 +37,16 @@ class IngestionJobORM(MarketDataBase):
     __tablename__ = "ingestion_jobs"
 
     __table_args__ = (
+        ForeignKeyConstraint(
+            ["job_id", "current_attempt_id"],
+            [
+                "ingestion_attempts.job_id",
+                "ingestion_attempts.attempt_id",
+            ],
+            name="fk_ingestion_jobs_current_attempt",
+            ondelete="RESTRICT",
+            use_alter=True,
+        ),
         CheckConstraint(
             "requested_start < requested_end",
             name="valid_requested_range",
@@ -287,6 +301,16 @@ class IngestionJobORM(MarketDataBase):
 
     completed_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True),
+        nullable=True,
+    )
+
+    execution_claimed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+
+    current_attempt_id: Mapped[UUID | None] = mapped_column(
+        Uuid(as_uuid=True),
         nullable=True,
     )
 

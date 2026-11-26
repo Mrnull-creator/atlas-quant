@@ -41,6 +41,11 @@ class IngestionJob:
     A job may produce multiple dataset versions. The job records their
     identities but does not own or modify those dataset versions.
 
+    records_downloaded counts normalized observations emitted by the
+    provider adapter, not records contained in the original raw payload.
+    records_written counts observations in successfully published versions.
+    records_rejected counts observations explicitly rejected by processing.
+
     data_kind and provider_mapping_id are optional together to preserve
     compatibility with historical jobs created before request identity
     was recorded. New ingestion workflows must supply both.

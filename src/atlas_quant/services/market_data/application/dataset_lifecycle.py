@@ -7,6 +7,9 @@ from uuid import UUID
 from atlas_quant.services.market_data.application.storage import (
     StorageObjectMetadata,
 )
+from atlas_quant.services.market_data.domain.ingestion_attempt import (
+    IngestionAttempt,
+)
 from atlas_quant.services.market_data.domain.datasets import DatasetVersion
 
 
@@ -19,6 +22,7 @@ class DatasetLifecycleRepository(Protocol):
         *,
         schema_version: str,
         storage_format: str,
+        attempt: IngestionAttempt | None = None,
     ) -> DatasetVersion:
         """Allocate and persist the next staging version atomically."""
         ...
@@ -27,6 +31,7 @@ class DatasetLifecycleRepository(Protocol):
         self,
         dataset_version_id: UUID,
         metadata: StorageObjectMetadata,
+        attempt: IngestionAttempt | None = None,
     ) -> DatasetVersion:
         """Publish a verified staging version and advance the latest pointer.
 
@@ -38,6 +43,7 @@ class DatasetLifecycleRepository(Protocol):
     async def fail_staging_version(
         self,
         dataset_version_id: UUID,
+        attempt: IngestionAttempt | None = None,
     ) -> DatasetVersion:
         """Transition a staging version to failed atomically.
 

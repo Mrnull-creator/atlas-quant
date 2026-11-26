@@ -4,8 +4,15 @@ These interfaces define how application services access domain data.
 Implementations belong in the infrastructure layer.
 """
 
+
+from datetime import timedelta
 from typing import Protocol
 from uuid import UUID
+
+from atlas_quant.services.market_data.domain.ingestion import IngestionJob
+from atlas_quant.services.market_data.domain.ingestion_attempt import (
+    IngestionAttempt,
+)
 
 from atlas_quant.services.market_data.domain.dataset_lineage import (
     DatasetLineageSourceType,
@@ -97,6 +104,12 @@ class DatasetRepository(Protocol):
         this call created it.
         """
         ...
+    async def get_or_create_raw(
+        self,
+        dataset: Dataset,
+    ) -> tuple[Dataset, bool]:
+        """Atomically retrieve or create a raw provider dataset."""
+        ...
 
     async def add(self, dataset: Dataset) -> None:
         """Persist a new logical dataset."""
@@ -134,11 +147,59 @@ class DatasetVersionRepository(Protocol):
         ...
 
 
+
 class IngestionJobRepository(Protocol):
-    """Persistence interface for ingestion jobs and their lifecycle."""
+    """Persistence interface for ingestion jobs and execution ownership."""
 
     async def get_by_id(self, job_id: UUID) -> IngestionJob | None:
         """Retrieve an ingestion job by its identifier."""
+        ...
+
+    async def claim_execution(self, job_id: UUID) -> bool:
+        """Legacy claim API retained during orchestrator migration.
+
+        New execution code must use claim_attempt instead.
+        """
+        ...
+
+    async def claim_attempt(
+        self,
+        job_id: UUID,
+        worker_id: str,
+        *,
+        lease_duration: timedelta = timedelta(seconds=60),
+    ) -> IngestionAttempt | None:
+        """Acquire a new authoritative execution attempt.
+
+        Returns None when the job is not running or another worker
+        still holds a valid lease.
+        """
+        ...
+
+    async def renew_attempt_lease(
+        self,
+        job_id: UUID,
+        attempt_id: UUID,
+        fencing_token: int,
+        worker_id: str,
+        *,
+        lease_duration: timedelta = timedelta(seconds=60),
+    ) -> IngestionAttempt:
+        """Renew the lease of the current authoritative attempt.
+
+        Raises an execution ownership error if the attempt is stale,
+        expired, superseded, or owned by another worker.
+        """
+        ...
+
+    async def update_owned(
+        self,
+        job: IngestionJob,
+        attempt_id: UUID,
+        fencing_token: int,
+        worker_id: str,
+    ) -> None:
+        """Persist a job update only while the caller owns its active attempt."""
         ...
 
     async def list_all(self) -> tuple[IngestionJob, ...]:
@@ -152,6 +213,7 @@ class IngestionJobRepository(Protocol):
     async def update(self, job: IngestionJob) -> None:
         """Persist an ingestion job lifecycle change."""
         ...
+
 
 
 class ValidationReportRepository(Protocol):

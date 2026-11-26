@@ -1,4 +1,3 @@
-
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -220,3 +219,147 @@ def test_quality_report_is_immutable():
 
     with pytest.raises(AttributeError):
         report.checked_records = 20
+
+def test_report_preserves_total_counts_when_details_are_truncated():
+    report = DataQualityReport(
+        checked_records=10,
+        findings=(
+            create_finding(FindingSeverity.ERROR, record_index=0),
+        ),
+        total_error_count=25,
+        total_warning_count=12,
+        total_info_count=3,
+    )
+
+    assert report.error_count == 25
+    assert report.warning_count == 12
+    assert report.info_count == 3
+    assert report.total_findings == 40
+    assert report.retained_finding_count == 1
+    assert report.findings_truncated is True
+    assert report.is_valid is False
+    assert report.has_warnings is True
+
+
+def test_report_without_explicit_totals_remains_backward_compatible():
+    report = DataQualityReport(
+        checked_records=2,
+        findings=(
+            create_finding(FindingSeverity.ERROR, record_index=0),
+            create_finding(FindingSeverity.WARNING, record_index=1),
+        ),
+    )
+
+    assert report.error_count == 1
+    assert report.warning_count == 1
+    assert report.info_count == 0
+    assert report.findings_truncated is False
+
+
+def test_report_rejects_totals_smaller_than_retained_findings():
+    with pytest.raises(ValueError, match="less than retained"):
+        DataQualityReport(
+            checked_records=1,
+            findings=(create_finding(),),
+            total_error_count=0,
+        )
+
+
+def test_report_rejects_negative_aggregate_count():
+    with pytest.raises(ValueError):
+        DataQualityReport(
+            checked_records=1,
+            total_error_count=-1,
+        )
+
+
+def test_report_rejects_invalid_truncation_flag():
+    with pytest.raises(TypeError):
+        DataQualityReport(
+            checked_records=1,
+            findings_truncated=1,
+        )
+
+
+def test_finding_accumulator_retains_bounded_details_and_counts_all():
+    from atlas_quant.services.market_data.domain.quality import (
+        QualityFindingAccumulator,
+    )
+
+    accumulator = QualityFindingAccumulator(max_findings=2)
+
+    for index in range(5):
+        accumulator.add(
+            create_finding(
+                FindingSeverity.ERROR,
+                record_index=index,
+            )
+        )
+
+    accumulator.add(
+        create_finding(
+            FindingSeverity.WARNING,
+            record_index=5,
+        )
+    )
+
+    report = accumulator.build_report(checked_records=6)
+
+    assert len(report.findings) == 2
+    assert report.error_count == 5
+    assert report.warning_count == 1
+    assert report.total_findings == 6
+    assert report.findings_truncated is True
+    assert report.is_valid is False
+
+
+def test_finding_accumulator_merges_report_totals_without_double_counting():
+    from atlas_quant.services.market_data.domain.quality import (
+        QualityFindingAccumulator,
+    )
+
+    original = DataQualityReport(
+        checked_records=5,
+        findings=(
+            create_finding(FindingSeverity.ERROR, record_index=0),
+        ),
+        total_error_count=10,
+        total_warning_count=4,
+    )
+
+    accumulator = QualityFindingAccumulator(max_findings=3)
+    accumulator.merge_report(original)
+    accumulator.add(
+        create_finding(FindingSeverity.INFO, record_index=1)
+    )
+
+    report = accumulator.build_report(checked_records=5)
+
+    assert len(report.findings) == 2
+    assert report.error_count == 10
+    assert report.warning_count == 4
+    assert report.info_count == 1
+    assert report.total_findings == 15
+    assert report.findings_truncated is True
+
+
+@pytest.mark.parametrize(
+    "value",
+    [0, -1],
+)
+def test_finding_accumulator_rejects_nonpositive_limit(value):
+    from atlas_quant.services.market_data.domain.quality import (
+        QualityFindingAccumulator,
+    )
+
+    with pytest.raises(ValueError):
+        QualityFindingAccumulator(max_findings=value)
+
+
+def test_finding_accumulator_rejects_boolean_limit():
+    from atlas_quant.services.market_data.domain.quality import (
+        QualityFindingAccumulator,
+    )
+
+    with pytest.raises(TypeError):
+        QualityFindingAccumulator(max_findings=True)

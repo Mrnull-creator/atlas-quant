@@ -1,3 +1,4 @@
+
 """Asynchronous SQLAlchemy repository for immutable dataset versions."""
 
 from datetime import datetime, timezone
@@ -11,9 +12,7 @@ from atlas_quant.services.market_data.application.repository_errors import (
     DatasetVersionRepositoryConflictError,
     DatasetVersionRepositoryDatasetNotFoundError,
 )
-from atlas_quant.services.market_data.domain.datasets import (
-    DatasetVersion,
-)
+from atlas_quant.services.market_data.domain.datasets import DatasetVersion
 from atlas_quant.services.market_data.infrastructure.persistence.dataset import (
     DatasetORM,
 )
@@ -151,6 +150,10 @@ class SQLAlchemyDatasetVersionRepository:
             published_at=SQLAlchemyDatasetVersionRepository._as_utc(
                 orm_version.published_at
             ),
+            verified_at=SQLAlchemyDatasetVersionRepository._as_utc(
+                orm_version.verified_at
+            ),
+            ingestion_attempt_id=orm_version.ingestion_attempt_id,
         )
 
     @staticmethod
@@ -175,6 +178,8 @@ class SQLAlchemyDatasetVersionRepository:
             checksum=version.checksum,
             created_at=version.created_at,
             published_at=version.published_at,
+            verified_at=version.verified_at,
+            ingestion_attempt_id=version.ingestion_attempt_id,
         )
 
     @staticmethod

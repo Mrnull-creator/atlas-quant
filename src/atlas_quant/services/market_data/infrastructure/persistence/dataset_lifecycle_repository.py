@@ -7,6 +7,9 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from atlas_quant.services.market_data.application.repository_errors import (
+    IngestionJobRepositoryExecutionOwnershipError,
+)
 from atlas_quant.services.market_data.application.dataset_lifecycle_errors import (
     DatasetLifecycleDatasetNotFoundError,
     DatasetLifecycleInvalidPublicationMetadataError,
@@ -23,11 +26,27 @@ from atlas_quant.services.market_data.domain.datasets import (
     DatasetVersion,
     DatasetVersionStatus,
 )
+from atlas_quant.services.market_data.domain.ingestion import (
+    IngestionJobStatus,
+)
+from atlas_quant.services.market_data.domain.ingestion_attempt import (
+    IngestionAttempt,
+    IngestionAttemptStatus,
+)
 from atlas_quant.services.market_data.infrastructure.persistence.dataset import (
     DatasetORM,
 )
 from atlas_quant.services.market_data.infrastructure.persistence.dataset_version import (
     DatasetVersionORM,
+)
+from atlas_quant.services.market_data.infrastructure.persistence.ingestion_attempt import (
+    IngestionAttemptORM,
+)
+from atlas_quant.services.market_data.infrastructure.persistence.ingestion_job import (
+    IngestionJobORM,
+)
+from atlas_quant.services.market_data.infrastructure.persistence.provider_instrument_mapping import (
+    ProviderInstrumentMappingORM,
 )
 
 
@@ -46,12 +65,97 @@ class SQLAlchemyDatasetLifecycleRepository:
         *,
         schema_version: str,
         storage_format: str,
+        attempt: IngestionAttempt | None = None,
     ) -> DatasetVersion:
-        """Lock a dataset and allocate its next version in one transaction."""
+        """Allocate a staging version, optionally fenced by an attempt.
+
+        Attempt-owned creation locks job, attempt, then dataset. Standalone
+        publication workflows may omit the attempt context.
+        """
 
         try:
             async with self._session_factory() as session:
                 async with session.begin():
+                    if attempt is not None:
+                        job_result = await session.execute(
+                            select(IngestionJobORM)
+                            .where(
+                                IngestionJobORM.job_id == attempt.job_id
+                            )
+                            .with_for_update()
+                        )
+                        job = job_result.scalar_one_or_none()
+
+                        if (
+                            job is None
+                            or job.status != IngestionJobStatus.RUNNING
+                            or job.current_attempt_id != attempt.attempt_id
+                        ):
+                            raise IngestionJobRepositoryExecutionOwnershipError(
+                                "The ingestion attempt is no longer the "
+                                "current owner of its job."
+                            )
+
+                        attempt_result = await session.execute(
+                            select(IngestionAttemptORM)
+                            .where(
+                                IngestionAttemptORM.attempt_id
+                                == attempt.attempt_id,
+                                IngestionAttemptORM.job_id == attempt.job_id,
+                            )
+                            .with_for_update()
+                        )
+                        persisted_attempt = attempt_result.scalar_one_or_none()
+
+                        database_now_result = await session.execute(
+                            select(func.clock_timestamp())
+                        )
+                        database_now = database_now_result.scalar_one()
+
+                        if (
+                            persisted_attempt is None
+                            or persisted_attempt.status
+                            != IngestionAttemptStatus.RUNNING
+                            or persisted_attempt.worker_id != attempt.worker_id
+                            or persisted_attempt.fencing_token
+                            != attempt.fencing_token
+                            or persisted_attempt.lease_expires_at
+                            <= database_now
+                        ):
+                            raise IngestionJobRepositoryExecutionOwnershipError(
+                                "The ingestion attempt has expired or its "
+                                "ownership credentials are stale."
+                            )
+
+                        if (
+                            job.provider_mapping_id is None
+                            or job.instrument_id is None
+                            or job.data_kind is None
+                        ):
+                            raise IngestionJobRepositoryExecutionOwnershipError(
+                                "The ingestion job does not contain a "
+                                "complete normalized dataset identity."
+                            )
+
+                        mapping_result = await session.execute(
+                            select(ProviderInstrumentMappingORM).where(
+                                ProviderInstrumentMappingORM.mapping_id
+                                == job.provider_mapping_id
+                            )
+                        )
+                        mapping = mapping_result.scalar_one_or_none()
+
+                        if (
+                            mapping is None
+                            or not mapping.is_active
+                            or mapping.provider_id != job.provider_id
+                            or mapping.instrument_id != job.instrument_id
+                        ):
+                            raise IngestionJobRepositoryExecutionOwnershipError(
+                                "The ingestion job's provider mapping does "
+                                "not match its provider and instrument."
+                            )
+
                     lock_statement = (
                         select(DatasetORM)
                         .where(DatasetORM.dataset_id == dataset_id)
@@ -65,6 +169,21 @@ class SQLAlchemyDatasetLifecycleRepository:
                         raise DatasetLifecycleDatasetNotFoundError(
                             f"Dataset {dataset_id} was not found."
                         )
+
+                    if attempt is not None:
+                        if (
+                            dataset.data_kind != job.data_kind
+                            or dataset.asset_class != job.asset_class
+                            or dataset.instrument_id != job.instrument_id
+                            or (
+                                dataset.data_kind == DatasetKind.OHLCV
+                                and dataset.timeframe != job.timeframe
+                            )
+                        ):
+                            raise IngestionJobRepositoryExecutionOwnershipError(
+                                "The target dataset identity does not match "
+                                "the ingestion job."
+                            )
 
                     max_version_statement = select(
                         func.coalesce(
@@ -84,6 +203,9 @@ class SQLAlchemyDatasetLifecycleRepository:
                         schema_version=schema_version,
                         storage_format=storage_format,
                         status=DatasetVersionStatus.STAGING,
+                        ingestion_attempt_id=(
+                            attempt.attempt_id if attempt is not None else None
+                        ),
                     )
 
                     session.add(self._to_orm(version))
@@ -100,25 +222,89 @@ class SQLAlchemyDatasetLifecycleRepository:
 
             raise
 
+    async def _validate_publication_attempt_ownership(
+        self,
+        session,
+        *,
+        attempt: IngestionAttempt | None,
+        version_attempt_id: UUID | None,
+    ) -> None:
+        """Validate attempt ownership before locking dataset publication rows.
+
+        The lock order is job -> attempt -> dataset -> version.
+        Standalone versions remain valid only when no attempt is supplied.
+        """
+
+        if version_attempt_id is None:
+            if attempt is not None:
+                raise IngestionJobRepositoryExecutionOwnershipError(
+                    "An ingestion attempt cannot publish a standalone "
+                    "dataset version."
+                )
+            return
+
+        if attempt is None or attempt.attempt_id != version_attempt_id:
+            raise IngestionJobRepositoryExecutionOwnershipError(
+                "The staging version requires its originating ingestion "
+                "attempt."
+            )
+
+        job_result = await session.execute(
+            select(IngestionJobORM)
+            .where(IngestionJobORM.job_id == attempt.job_id)
+            .with_for_update()
+        )
+        job = job_result.scalar_one_or_none()
+
+        if (
+            job is None
+            or job.status != IngestionJobStatus.RUNNING
+            or job.current_attempt_id != attempt.attempt_id
+        ):
+            raise IngestionJobRepositoryExecutionOwnershipError(
+                "The ingestion attempt is no longer the current owner "
+                "of its job."
+            )
+
+        attempt_result = await session.execute(
+            select(IngestionAttemptORM)
+            .where(
+                IngestionAttemptORM.attempt_id == attempt.attempt_id,
+                IngestionAttemptORM.job_id == attempt.job_id,
+            )
+            .with_for_update()
+        )
+        persisted_attempt = attempt_result.scalar_one_or_none()
+
+        database_now_result = await session.execute(
+            select(func.clock_timestamp())
+        )
+        database_now = database_now_result.scalar_one()
+
+        if (
+            persisted_attempt is None
+            or persisted_attempt.status != IngestionAttemptStatus.RUNNING
+            or persisted_attempt.worker_id != attempt.worker_id
+            or persisted_attempt.fencing_token != attempt.fencing_token
+            or persisted_attempt.lease_expires_at <= database_now
+        ):
+            raise IngestionJobRepositoryExecutionOwnershipError(
+                "The ingestion attempt has expired or its ownership "
+                "credentials are stale."
+            )
+
     async def publish_staging_version(
         self,
         dataset_version_id: UUID,
         metadata: StorageObjectMetadata,
+        attempt: IngestionAttempt | None = None,
     ) -> DatasetVersion:
         """Publish a verified version and advance the latest pointer atomically.
 
-        The caller is responsible for verifying the physical storage object
-        before invoking this operation.
+        Attempt-bound versions require the active originating attempt.
+        Standalone versions retain the existing publication behavior.
 
-        Dataset locking serializes publication operations for the same
-        dataset. An older version may become available after a newer one,
-        but it cannot move the latest-version pointer backwards.
-
-        Raw-provider datasets represent opaque source payloads. Their
-        observation count and observation timestamps must therefore be None.
-
-        Normalized datasets must contain at least one observation and
-        provide both observation timestamp boundaries.
+        The transaction locks job, attempt, dataset, then version.
         """
 
         if metadata.record_count == 0:
@@ -128,18 +314,29 @@ class SQLAlchemyDatasetLifecycleRepository:
 
         async with self._session_factory() as session:
             async with session.begin():
-                result = await session.execute(
-                    select(DatasetVersionORM.dataset_id).where(
+                identity_result = await session.execute(
+                    select(
+                        DatasetVersionORM.dataset_id,
+                        DatasetVersionORM.ingestion_attempt_id,
+                    ).where(
                         DatasetVersionORM.dataset_version_id
                         == dataset_version_id
                     )
                 )
-                dataset_id = result.scalar_one_or_none()
+                identity = identity_result.one_or_none()
 
-                if dataset_id is None:
+                if identity is None:
                     raise DatasetLifecycleVersionNotFoundError(
                         f"Dataset version {dataset_version_id} was not found."
                     )
+
+                dataset_id, version_attempt_id = identity
+
+                await self._validate_publication_attempt_ownership(
+                    session,
+                    attempt=attempt,
+                    version_attempt_id=version_attempt_id,
+                )
 
                 dataset_result = await session.execute(
                     select(DatasetORM)
@@ -151,6 +348,39 @@ class SQLAlchemyDatasetLifecycleRepository:
                 if dataset is None:
                     raise DatasetLifecycleDatasetNotFoundError(
                         f"Dataset {dataset_id} was not found."
+                    )
+
+                version_result = await session.execute(
+                    select(DatasetVersionORM)
+                    .where(
+                        DatasetVersionORM.dataset_version_id
+                        == dataset_version_id
+                    )
+                    .with_for_update()
+                )
+                version = version_result.scalar_one_or_none()
+
+                if version is None:
+                    raise DatasetLifecycleVersionNotFoundError(
+                        f"Dataset version {dataset_version_id} was not found."
+                    )
+
+                if getattr(version, 'ingestion_attempt_id', None) != version_attempt_id:
+                    raise IngestionJobRepositoryExecutionOwnershipError(
+                        "The staging version's originating attempt changed "
+                        "during publication."
+                    )
+
+                if version.status != DatasetVersionStatus.STAGING:
+                    raise DatasetLifecycleInvalidVersionStateError(
+                        f"Dataset version {dataset_version_id} cannot be "
+                        f"published from status '{version.status}'."
+                    )
+
+                if metadata.storage_format != version.storage_format:
+                    raise DatasetLifecycleInvalidPublicationMetadataError(
+                        "Storage metadata format does not match the "
+                        "version's declared storage format."
                     )
 
                 if dataset.data_kind == DatasetKind.RAW_PROVIDER:
@@ -175,33 +405,6 @@ class SQLAlchemyDatasetLifecycleRepository:
                             "positive record count and both observation "
                             "timestamps."
                         )
-
-                version_result = await session.execute(
-                    select(DatasetVersionORM)
-                    .where(
-                        DatasetVersionORM.dataset_version_id
-                        == dataset_version_id
-                    )
-                    .with_for_update()
-                )
-                version = version_result.scalar_one_or_none()
-
-                if version is None:
-                    raise DatasetLifecycleVersionNotFoundError(
-                        f"Dataset version {dataset_version_id} was not found."
-                    )
-
-                if version.status != DatasetVersionStatus.STAGING:
-                    raise DatasetLifecycleInvalidVersionStateError(
-                        f"Dataset version {dataset_version_id} cannot be "
-                        f"published from status '{version.status}'."
-                    )
-
-                if metadata.storage_format != version.storage_format:
-                    raise DatasetLifecycleInvalidPublicationMetadataError(
-                        "Storage metadata format does not match the "
-                        "version's declared storage format."
-                    )
 
                 published_at = datetime.now(timezone.utc)
 
@@ -240,27 +443,35 @@ class SQLAlchemyDatasetLifecycleRepository:
     async def fail_staging_version(
         self,
         dataset_version_id: UUID,
+        attempt: IngestionAttempt | None = None,
     ) -> DatasetVersion:
-        """Mark a staging version as failed within a database transaction.
-
-        Only STAGING versions can transition to FAILED. The dataset's latest
-        published-version pointer is deliberately left unchanged.
-        """
+        """Mark a staging version failed while enforcing attempt ownership."""
 
         async with self._session_factory() as session:
             async with session.begin():
-                result = await session.execute(
-                    select(DatasetVersionORM.dataset_id).where(
+                identity_result = await session.execute(
+                    select(
+                        DatasetVersionORM.dataset_id,
+                        DatasetVersionORM.ingestion_attempt_id,
+                    ).where(
                         DatasetVersionORM.dataset_version_id
                         == dataset_version_id
                     )
                 )
-                dataset_id = result.scalar_one_or_none()
+                identity = identity_result.one_or_none()
 
-                if dataset_id is None:
+                if identity is None:
                     raise DatasetLifecycleVersionNotFoundError(
                         f"Dataset version {dataset_version_id} was not found."
                     )
+
+                dataset_id, version_attempt_id = identity
+
+                await self._validate_publication_attempt_ownership(
+                    session,
+                    attempt=attempt,
+                    version_attempt_id=version_attempt_id,
+                )
 
                 dataset_result = await session.execute(
                     select(DatasetORM)
@@ -287,6 +498,12 @@ class SQLAlchemyDatasetLifecycleRepository:
                 if version is None:
                     raise DatasetLifecycleVersionNotFoundError(
                         f"Dataset version {dataset_version_id} was not found."
+                    )
+
+                if getattr(version, 'ingestion_attempt_id', None) != version_attempt_id:
+                    raise IngestionJobRepositoryExecutionOwnershipError(
+                        "The staging version's originating attempt changed "
+                        "during failure handling."
                     )
 
                 if version.status != DatasetVersionStatus.STAGING:
@@ -376,6 +593,8 @@ class SQLAlchemyDatasetLifecycleRepository:
             checksum=version.checksum,
             created_at=version.created_at,
             published_at=version.published_at,
+            verified_at=version.verified_at,
+            ingestion_attempt_id=version.ingestion_attempt_id,
         )
 
     @staticmethod
@@ -398,6 +617,10 @@ class SQLAlchemyDatasetLifecycleRepository:
             checksum=version.checksum,
             created_at=version.created_at,
             published_at=version.published_at,
+            verified_at=getattr(version, "verified_at", None),
+            ingestion_attempt_id=getattr(
+                version, "ingestion_attempt_id", None
+            ),
         )
 
     @staticmethod

@@ -1,139 +1,192 @@
-"""Batch validation for bid/ask market quotes."""
+"""Incremental validation for bid/ask market quotes."""
 
 from collections.abc import Iterable
 
+from atlas_quant.services.market_data.application.incremental_validation import (
+    IncrementalTimestampIndex,
+)
 from atlas_quant.services.market_data.domain.quotes import BidAskQuote
 from atlas_quant.services.market_data.domain.quality import (
     DataQualityReport,
     FindingSeverity,
     QualityFinding,
+    QualityFindingAccumulator,
 )
 
 
 class QuoteBatchValidator:
-    """Validate consistency across a batch of bid/ask quotes."""
+    """Validate consistency across bid/ask quote observations."""
+
+    def __init__(self, *, max_findings: int = 1_000) -> None:
+        self._max_findings = max_findings
+
+    def start_session(self) -> "_QuoteValidationSession":
+        """Start an incremental validation session."""
+        return _QuoteValidationSession(
+            max_findings=self._max_findings
+        )
 
     def validate(
         self,
         quotes: Iterable[BidAskQuote],
     ) -> DataQualityReport:
-        """Detect crossed, zero-width, duplicate, and unordered quotes.
-
-        Quotes are never sorted, modified, or discarded.
-
-        Record indexes refer to the original input order.
-        Validation is performed independently for each instrument.
-        """
+        """Validate an iterable without materializing its observations."""
 
         if isinstance(quotes, (str, bytes)):
             raise TypeError("quotes must contain BidAskQuote objects.")
 
         try:
-            observations = tuple(quotes)
+            observations = iter(quotes)
         except TypeError as exc:
             raise TypeError(
                 "quotes must be an iterable of BidAskQuote objects."
             ) from exc
 
-        for quote in observations:
-            if not isinstance(quote, BidAskQuote):
-                raise TypeError(
-                    "Every observation must be a BidAskQuote."
-                )
+        with self.start_session() as session:
+            for quote in observations:
+                session.add(quote)
 
-        findings: list[QualityFinding] = []
+            return session.finish()
 
-        seen_timestamps: dict[str, set] = {}
-        latest_timestamps: dict[str, object] = {}
 
-        for record_index, quote in enumerate(observations):
-            # Assess the individual quote's bid/ask relationship.
-            if quote.bid > quote.ask:
-                findings.append(
-                    QualityFinding(
-                        code="CROSSED_QUOTE",
-                        severity=FindingSeverity.ERROR,
-                        message=(
-                            f"Bid exceeds ask for {quote.symbol} "
-                            f"at {quote.timestamp.isoformat()}."
-                        ),
-                        record_index=record_index,
-                        field="bid/ask",
-                        timestamp=quote.timestamp,
-                    )
-                )
+class _QuoteValidationSession:
+    """Incrementally validate bid/ask quote observations."""
 
-            elif quote.bid == quote.ask:
-                findings.append(
-                    QualityFinding(
-                        code="ZERO_WIDTH_SPREAD",
-                        severity=FindingSeverity.INFO,
-                        message=(
-                            f"Bid equals ask for {quote.symbol} "
-                            f"at {quote.timestamp.isoformat()}."
-                        ),
-                        record_index=record_index,
-                        field="bid/ask",
-                        timestamp=quote.timestamp,
-                    )
-                )
+    def __init__(self, *, max_findings: int = 1_000) -> None:
+        self._timestamp_index = IncrementalTimestampIndex()
 
-            # Check duplicate timestamps within each instrument.
-            timestamps = seen_timestamps.setdefault(
-                quote.symbol,
-                set(),
+        try:
+            self._findings = QualityFindingAccumulator(
+                max_findings=max_findings
+            )
+        except BaseException:
+            self._timestamp_index.close()
+            raise
+        self._checked_records = 0
+        self._closed = False
+
+    def add(self, quote: BidAskQuote) -> bool:
+        """Validate one observation and return whether it has an error."""
+
+        self._ensure_open()
+
+        if not isinstance(quote, BidAskQuote):
+            raise TypeError(
+                "Every observation must be a BidAskQuote."
             )
 
-            if quote.timestamp in timestamps:
-                findings.append(
-                    QualityFinding(
-                        code="DUPLICATE_QUOTE_TIMESTAMP",
-                        severity=FindingSeverity.ERROR,
-                        message=(
-                            f"Duplicate quote timestamp for "
-                            f"{quote.symbol} at "
-                            f"{quote.timestamp.isoformat()}."
-                        ),
-                        record_index=record_index,
-                        field="timestamp",
-                        timestamp=quote.timestamp,
-                    )
+        record_index = self._checked_records
+        self._checked_records += 1
+        has_error = False
+
+        # Assess the individual quote's bid/ask relationship.
+        if quote.bid > quote.ask:
+            self._findings.add(
+                QualityFinding(
+                    code="CROSSED_QUOTE",
+                    severity=FindingSeverity.ERROR,
+                    message=(
+                        f"Bid exceeds ask for {quote.symbol} "
+                        f"at {quote.timestamp.isoformat()}."
+                    ),
+                    record_index=record_index,
+                    field="bid/ask",
+                    timestamp=quote.timestamp,
                 )
+            )
+            has_error = True
 
-                # Do not also report an ordering warning for a duplicate.
-                continue
-
-            timestamps.add(quote.timestamp)
-
-            # Check chronological order independently per instrument.
-            latest_timestamp = latest_timestamps.get(quote.symbol)
-
-            if (
-                latest_timestamp is not None
-                and quote.timestamp < latest_timestamp
-            ):
-                findings.append(
-                    QualityFinding(
-                        code="OUT_OF_ORDER_QUOTE",
-                        severity=FindingSeverity.WARNING,
-                        message=(
-                            f"Quote timestamp for {quote.symbol} "
-                            f"is earlier than a previously observed "
-                            f"timestamp."
-                        ),
-                        record_index=record_index,
-                        field="timestamp",
-                        timestamp=quote.timestamp,
-                    )
+        elif quote.bid == quote.ask:
+            self._findings.add(
+                QualityFinding(
+                    code="ZERO_WIDTH_SPREAD",
+                    severity=FindingSeverity.INFO,
+                    message=(
+                        f"Bid equals ask for {quote.symbol} "
+                        f"at {quote.timestamp.isoformat()}."
+                    ),
+                    record_index=record_index,
+                    field="bid/ask",
+                    timestamp=quote.timestamp,
                 )
+            )
 
-            if (
-                latest_timestamp is None
-                or quote.timestamp > latest_timestamp
-            ):
-                latest_timestamps[quote.symbol] = quote.timestamp
-
-        return DataQualityReport(
-            checked_records=len(observations),
-            findings=tuple(findings),
+        # Check duplicate timestamps and chronological order.
+        timestamp_check = self._timestamp_index.observe(
+            quote.symbol,
+            quote.timestamp,
         )
+
+        if timestamp_check.is_duplicate:
+            self._findings.add(
+                QualityFinding(
+                    code="DUPLICATE_QUOTE_TIMESTAMP",
+                    severity=FindingSeverity.ERROR,
+                    message=(
+                        f"Duplicate quote timestamp for "
+                        f"{quote.symbol} at "
+                        f"{quote.timestamp.isoformat()}."
+                    ),
+                    record_index=record_index,
+                    field="timestamp",
+                    timestamp=quote.timestamp,
+                )
+            )
+            has_error = True
+
+        elif timestamp_check.is_out_of_order:
+            self._findings.add(
+                QualityFinding(
+                    code="OUT_OF_ORDER_QUOTE",
+                    severity=FindingSeverity.WARNING,
+                    message=(
+                        f"Quote timestamp for {quote.symbol} "
+                        f"is earlier than a previously observed "
+                        f"timestamp."
+                    ),
+                    record_index=record_index,
+                    field="timestamp",
+                    timestamp=quote.timestamp,
+                )
+            )
+
+        return has_error
+
+    def finish(self) -> DataQualityReport:
+        """Complete validation and return the quality report."""
+
+        self._ensure_open()
+
+        report = self._findings.build_report(
+            checked_records=self._checked_records
+        )
+
+        self.close()
+        return report
+
+    def close(self) -> None:
+        """Release temporary validation storage."""
+
+        if self._closed:
+            return
+
+        self._closed = True
+        self._timestamp_index.close()
+
+    def _ensure_open(self) -> None:
+        if self._closed:
+            raise RuntimeError(
+                "The quote validation session is closed."
+            )
+
+    def __enter__(self) -> "_QuoteValidationSession":
+        self._ensure_open()
+        return self
+
+    def __exit__(
+        self,
+        exception_type,
+        exception,
+        traceback,
+    ) -> None:
+        self.close()

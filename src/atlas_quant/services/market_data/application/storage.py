@@ -215,3 +215,15 @@ class RawDataStorage(Protocol):
         The caller is responsible for closing the returned stream.
         """
         ...
+
+
+class VerifiableRawDataStorage(RawDataStorage, Protocol):
+    """Raw storage that can verify an object before publication."""
+
+    async def verify(
+        self,
+        dataset_version_id: UUID,
+        expected: StorageObjectMetadata,
+    ) -> None:
+        """Verify the stored payload against its expected metadata."""
+        ...

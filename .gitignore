@@ -40,3 +40,19 @@ research/reports/
 
 # Python package build metadata
 *.egg-info/
+
+# Temporary root-level patch scripts and duplicate files
+/apply_b3a.py
+/fix_b3a.py
+/execution_attempt.py
+/fill.py
+/momentum.py
+
+# Temporary review artifacts
+/atlas-quant-final-review.txt
+/b3a_review_bundle.txt
+
+# Local backups
+*.bak
+*.broken-*
+*.pre-*
